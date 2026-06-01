@@ -1,0 +1,13 @@
+# Ollama Monitor Configuration
+
+[ollama]
+host = "http://192.168.1.50"
+port = 11434
+
+[server]
+bind = "0.0.0.0"
+port = 3000
+refresh_interval_secs = 15
+
+[gpu]
+device_index = 0
