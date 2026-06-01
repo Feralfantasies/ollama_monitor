@@ -63,7 +63,7 @@ fn parse_gpu_csv_line(line: &str, expected_index: usize) -> Result<GpuMetric> {
     let temp = parse_optional_f64(parts.get(parts.len() - 5).copied());
 
     // Name is in the middle (from index 1 to len-6)
-    let name_fields: Vec<_> = parts[1..parts.len() - 6].iter().copied().collect();
+    let name_fields: Vec<_> = parts[1..parts.len() - 6].to_vec();
     let name = if !name_fields.is_empty() {
         Some(name_fields.join(", "))
     } else {
