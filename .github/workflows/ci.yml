@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs on the same branch when a new push arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── 1. Format ──────────────────────────────────────────────────────────────
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  # ── 2. Clippy ─────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+
+      # ── deny all warnings ────────────────────────────────────────────
+      - name: cargo clippy — deny all warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ── 3. Build (warnings as errors) ──────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build
+
+      # ── debug build (warnings as errors) ─────────────────────────────
+      - name: cargo build — debug
+        run: RUSTFLAGS="-D warnings" cargo build
+
+      # ── release build (warnings as errors) ──────────────────────────
+      - name: cargo build — release
+        run: RUSTFLAGS="-D warnings" cargo build --release
+
+  # ── 4. Tests ────────────────────────────────────────────────────────────
+  test:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+
+      # ── run all unit tests (warnings as errors) ──────────────────────
+      - name: cargo test
+        run: RUSTFLAGS="-D warnings" cargo test --all-targets

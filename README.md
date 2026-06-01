@@ -102,6 +102,24 @@ cargo build
 cargo build --release
 ```
 
+### CI Verification
+
+The project uses GitHub Actions to enforce code quality on every push and PR. To reproduce the same checks locally:
+
+```bash
+# format check (fails on any style deviation)
+cargo fmt --all -- --check
+
+# linting — deny all warnings
+cargo clippy --all-targets -- -D warnings
+
+# build — fail on any compiler warning
+RUSTFLAGS="-D warnings" cargo build --release
+
+# unit tests
+cargo test --all-targets
+```
+
 ### Docker
 
 ```dockerfile
