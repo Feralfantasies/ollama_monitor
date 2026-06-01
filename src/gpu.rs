@@ -1,5 +1,4 @@
 /// Parses `nvidia-smi` output to extract GPU metrics.
-
 use anyhow::{Context, Result};
 use std::process::Command;
 use tracing::{debug, warn};
@@ -34,7 +33,10 @@ pub fn try_query_gpu(device_index: usize) -> GpuMetric {
     match query_gpu(device_index) {
         Ok(metric) => metric,
         Err(e) => {
-            warn!("GPU query failed (this is expected in non-GPU dev environments): {}", e);
+            warn!(
+                "GPU query failed (this is expected in non-GPU dev environments): {}",
+                e
+            );
             GpuMetric::placeholder()
         }
     }

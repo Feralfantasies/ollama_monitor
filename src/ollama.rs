@@ -1,5 +1,4 @@
 /// Client for the Ollama REST API.
-
 use anyhow::{Context, Result};
 use reqwest::Client;
 use std::time::Duration;
@@ -49,5 +48,4 @@ impl OllamaClient {
             }
         }
     }
-
 }

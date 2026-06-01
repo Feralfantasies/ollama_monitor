@@ -1,21 +1,14 @@
 /// Axum REST API server + embedded web dashboard.
-
 use anyhow::Result;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Html,
-    routing::get,
-    Router,
-};
+use axum::{extract::State, http::StatusCode, response::Html, routing::get, Router};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::info as log_info;
 
 use crate::config::Config;
+use crate::gpu::try_query_gpu;
 use crate::models::{ApiGpuResponse, ApiModelResponse, MonitorStatus};
 use crate::ollama::OllamaClient;
-use crate::gpu::try_query_gpu;
 
 fn now_ts() -> String {
     use std::time::SystemTime;
@@ -46,7 +39,9 @@ pub async fn run_refresh_loop(config: &Config, state: AppState) {
             Some(tags) => tags.models.iter().map(|m| m.model_name.clone()).collect(),
             None => vec![],
         };
-        let loaded_model = tags_resp.as_ref().and_then(|t| t.models.first().cloned().map(|m| m.model_name));
+        let loaded_model = tags_resp
+            .as_ref()
+            .and_then(|t| t.models.first().cloned().map(|m| m.model_name));
 
         let gpu_metric = try_query_gpu(config.gpu_device_index);
 
@@ -76,7 +71,10 @@ async fn handle_api_status(
     let latest = state.latest_status.read().await;
     match latest.as_ref() {
         Some(s) => Ok(axum::Json(s.clone())),
-        None => Err((StatusCode::SERVICE_UNAVAILABLE, "First refresh not yet complete".into())),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "First refresh not yet complete".into(),
+        )),
     }
 }
 
@@ -89,7 +87,10 @@ async fn handle_api_gpu(
             gpu: s.gpu.clone(),
             timestamp: s.timestamp.clone(),
         })),
-        None => Err((StatusCode::SERVICE_UNAVAILABLE, "First refresh not yet complete".into())),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "First refresh not yet complete".into(),
+        )),
     }
 }
 
@@ -103,7 +104,10 @@ async fn handle_api_models(
             available_models: s.available_models.clone(),
             total_count: s.available_models.len(),
         })),
-        None => Err((StatusCode::SERVICE_UNAVAILABLE, "First refresh not yet complete".into())),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "First refresh not yet complete".into(),
+        )),
     }
 }
 
