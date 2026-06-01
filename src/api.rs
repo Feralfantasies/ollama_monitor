@@ -132,7 +132,7 @@ pub async fn bind_listener(config: &Config) -> Result<SocketAddr> {
 
 // ── Embedded Dashboard HTML ────────────────
 
-const DASHBOARD_HTML: &'static str = r#"<!DOCTYPE html>
+const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Ollama Monitor</title>
 <style>
