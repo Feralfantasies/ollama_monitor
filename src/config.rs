@@ -1,6 +1,15 @@
-use serde::Deserialize;
-
-/// Application-wide configuration loaded from TOML file or defaults.
+/// Application-wide configuration loaded from environment variables with sensible defaults.
+///
+/// Environment variables:
+///
+/// | Variable                  | Default               | Description                        |
+/// |---------------------------|-----------------------|------------------------------------|
+/// | `OLLAMA_HOST`             | `http://127.0.0.1`      | Ollama server base URL             |
+/// | `OLLAMA_PORT`             | `11434`               | Ollama server port                 |
+/// | `SERVER_BIND`             | `0.0.0.0`             | Address to bind the API server to  |
+/// | `SERVER_PORT`             | `3000`                | Port for the API server            |
+/// | `REFRESH_INTERVAL_SECS`   | `15`                  | Seconds between status refreshes   |
+/// | `GPU_DEVICE_INDEX`        | `0`                   | NVIDIA GPU device index to query   |
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -15,7 +24,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            ollama_host: "http://192.168.1.50".into(),
+            ollama_host: "http://127.0.0.1".into(),
             ollama_port: 11434,
             server_bind: "0.0.0.0".into(),
             server_port: 3000,
@@ -26,26 +35,44 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load config from `config.toml` in the current directory, falling back to defaults for missing values.
+    /// Load config from environment variables, falling back to defaults for unset values.
     pub fn load() -> Self {
         let mut config = Self::default();
 
-        if let Ok(contents) = std::fs::read_to_string("config.toml") {
-            if let Ok(parsed) = toml::from_str::<ConfigRaw>(&contents) {
-                if let Some(ollama) = parsed.ollama {
-                    config.ollama_host = ollama.host.unwrap_or(config.ollama_host);
-                    config.ollama_port = ollama.port.unwrap_or(config.ollama_port);
-                }
-                if let Some(server) = parsed.server {
-                    config.server_bind = server.bind.unwrap_or(config.server_bind);
-                    config.server_port = server.port.unwrap_or(config.server_port);
-                    config.refresh_interval_secs = server.refresh.unwrap_or(config.refresh_interval_secs);
-                }
-                if let Some(gpu) = parsed.gpu {
-                    config.gpu_device_index = gpu.device.unwrap_or(config.gpu_device_index);
-                }
+        if let Ok(val) = std::env::var("OLLAMA_HOST") {
+            config.ollama_host = val;
+        }
+        if let Ok(val) = std::env::var("OLLAMA_PORT") {
+            if let Ok(port) = val.parse::<u16>() {
+                config.ollama_port = port;
             } else {
-                tracing::warn!("Failed to parse config.toml, using defaults");
+                tracing::warn!("Invalid OLLAMA_PORT '{}', using default", val);
+            }
+        }
+
+        if let Ok(val) = std::env::var("SERVER_BIND") {
+            config.server_bind = val;
+        }
+        if let Ok(val) = std::env::var("SERVER_PORT") {
+            if let Ok(port) = val.parse::<u16>() {
+                config.server_port = port;
+            } else {
+                tracing::warn!("Invalid SERVER_PORT '{}', using default", val);
+            }
+        }
+        if let Ok(val) = std::env::var("REFRESH_INTERVAL_SECS") {
+            if let Ok(interval) = val.parse::<u64>() {
+                config.refresh_interval_secs = interval;
+            } else {
+                tracing::warn!("Invalid REFRESH_INTERVAL_SECS '{}', using default", val);
+            }
+        }
+
+        if let Ok(val) = std::env::var("GPU_DEVICE_INDEX") {
+            if let Ok(index) = val.parse::<usize>() {
+                config.gpu_device_index = index;
+            } else {
+                tracing::warn!("Invalid GPU_DEVICE_INDEX '{}', using default", val);
             }
         }
 
@@ -55,31 +82,4 @@ impl Config {
     pub fn ollama_base_url(&self) -> String {
         format!("{}:{}", self.ollama_host, self.ollama_port)
     }
-}
-
-// --- Raw TOML parsing structures ---
-
-#[derive(Deserialize)]
-struct ConfigRaw {
-    ollama: Option<OllamaSection>,
-    server: Option<ServerSection>,
-    gpu: Option<GpuSection>,
-}
-
-#[derive(Deserialize)]
-struct OllamaSection {
-    host: Option<String>,
-    port: Option<u16>,
-}
-
-#[derive(Deserialize)]
-struct ServerSection {
-    bind: Option<String>,
-    port: Option<u16>,
-    refresh: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct GpuSection {
-    device: Option<usize>,
 }
