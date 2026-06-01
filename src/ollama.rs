@@ -27,8 +27,7 @@ impl OllamaClient {
         debug!("Fetching models from {}", self.base_url);
         let url = format!("{}/api/tags", self.base_url);
 
-        self
-            .http
+        self.http
             .get(&url)
             .send()
             .await
