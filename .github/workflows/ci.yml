@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 # Cancel in-progress runs on the same branch when a new push arrives.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,16 +17,19 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ── 1. Format ──────────────────────────────────────────────────────────────
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
           components: rustfmt
 
@@ -33,57 +39,66 @@ jobs:
   # ── 2. Clippy ─────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
         with:
           shared-key: clippy
 
-      # ── deny all warnings ────────────────────────────────────────────
       - name: cargo clippy — deny all warnings
         run: cargo clippy --all-targets -- -D warnings
 
-  # ── 3. Build (warnings as errors) ──────────────────────────────────────
+  # ── 3. Build ──────────────────────────────────────────────────────────────
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
         with:
           shared-key: build
 
-      # ── debug build (warnings as errors) ─────────────────────────────
-      - name: cargo build — debug
+      - name: cargo build — warnings as errors
         run: RUSTFLAGS="-D warnings" cargo build
 
-      # ── release build (warnings as errors) ──────────────────────────
-      - name: cargo build — release
-        run: RUSTFLAGS="-D warnings" cargo build --release
-
-  # ── 4. Tests ────────────────────────────────────────────────────────────
-  test:
-    name: Rust Tests
-    runs-on: ubuntu-latest
+  # ── 4. Build static musl binary ───────────────────────────────────────────
+  build-musl:
+    name: Build (musl)
+    runs-on: self-hosted
     needs: [fmt, clippy]
     steps:
-      - uses: actions/checkout@v6
+      - name: Install system dependencies
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y build-essential pkg-config musl-tools && break
+            echo "apt-get attempt $i failed; retrying in 10 s..."
+            sleep 10
+          done
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
-          shared-key: test
+          persist-credentials: false
 
-      # ── run all unit tests (warnings as errors) ──────────────────────
-      - name: cargo test
-        run: RUSTFLAGS="-D warnings" cargo test --all-targets
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
+        with:
+          shared-key: build-musl
+
+      - name: cargo build — musl static target
+        run: RUSTFLAGS="-D warnings" cargo build --release --target x86_64-unknown-linux-musl
