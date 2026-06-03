@@ -1,5 +1,4 @@
 /// Shared data types for Ollama and GPU state.
-
 use serde::{Deserialize, Serialize};
 
 // ── Ollama API response types ───────────────────────────────────

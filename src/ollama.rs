@@ -1,5 +1,4 @@
 /// Client for the Ollama REST API.
-
 use anyhow::{Context, Result};
 use reqwest::Client;
 use std::time::Duration;
@@ -28,15 +27,14 @@ impl OllamaClient {
         debug!("Fetching models from {}", self.base_url);
         let url = format!("{}/api/tags", self.base_url);
 
-        Ok(self
-            .http
+        self.http
             .get(&url)
             .send()
             .await
             .with_context(|| format!("Failed to connect to Ollama at {}", url))?
             .json::<OllamaTagsResponse>()
             .await
-            .with_context(|| "Failed to parse Ollama /api/tags response")?)
+            .with_context(|| "Failed to parse Ollama /api/tags response")
     }
 
     /// Best-effort fetch; returns None on failure instead of propagating errors.
@@ -48,9 +46,5 @@ impl OllamaClient {
                 None
             }
         }
-    }
-
-    pub fn base_url(&self) -> &str {
-        &self.base_url
     }
 }
