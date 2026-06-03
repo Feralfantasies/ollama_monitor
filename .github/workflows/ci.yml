@@ -23,7 +23,7 @@ jobs:
   # ── 1. Format ──────────────────────────────────────────────────────────────
   fmt:
     name: Format
-    runs-on: self-hosted
+    runs-on: firethorn
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
@@ -39,7 +39,7 @@ jobs:
   # ── 2. Clippy ─────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
-    runs-on: self-hosted
+    runs-on: firethorn
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
@@ -59,7 +59,7 @@ jobs:
   # ── 3. Build ──────────────────────────────────────────────────────────────
   build:
     name: Build
-    runs-on: self-hosted
+    runs-on: firethorn
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
@@ -77,7 +77,7 @@ jobs:
   # ── 4. Build static musl binary ───────────────────────────────────────────
   build-musl:
     name: Build (musl)
-    runs-on: self-hosted
+    runs-on: firethorn
     needs: [fmt, clippy]
     steps:
       - name: Install system dependencies
