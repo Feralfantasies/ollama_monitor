@@ -1,5 +1,4 @@
 /// Parses `nvidia-smi` output to extract GPU metrics.
-
 use anyhow::{Context, Result};
 use std::process::Command;
 use tracing::{debug, warn};
@@ -9,7 +8,7 @@ use crate::models::GpuMetric;
 /// Query structured GPU data via nvidia-smi CSV mode (no header).
 pub fn query_gpu(device_index: usize) -> Result<GpuMetric> {
     let output = Command::new("nvidia-smi")
-        .args(&[
+        .args([
             "--query-gpu=index,name,temperature.gpu,memory.used,memory.total,utilization.gpu,power.draw",
             "--format=csv,noheader,nounits",
             "--id",
@@ -34,7 +33,10 @@ pub fn try_query_gpu(device_index: usize) -> GpuMetric {
     match query_gpu(device_index) {
         Ok(metric) => metric,
         Err(e) => {
-            warn!("GPU query failed (this is expected in non-GPU dev environments): {}", e);
+            warn!(
+                "GPU query failed (this is expected in non-GPU dev environments): {}",
+                e
+            );
             GpuMetric::placeholder()
         }
     }
@@ -61,7 +63,7 @@ fn parse_gpu_csv_line(line: &str, expected_index: usize) -> Result<GpuMetric> {
     let temp = parse_optional_f64(parts.get(parts.len() - 5).copied());
 
     // Name is in the middle (from index 1 to len-6)
-    let name_fields: Vec<_> = parts[1..parts.len() - 6].iter().map(|s| *s).collect();
+    let name_fields: Vec<_> = parts[1..parts.len() - 6].to_vec();
     let name = if !name_fields.is_empty() {
         Some(name_fields.join(", "))
     } else {

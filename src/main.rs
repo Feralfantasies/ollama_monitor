@@ -1,5 +1,4 @@
 /// Ollama Monitor — main entry point.
-
 mod api;
 mod config;
 mod gpu;
@@ -11,8 +10,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     fmt::Subscriber::builder()
         .with_env_filter(env_filter)
         .init();
