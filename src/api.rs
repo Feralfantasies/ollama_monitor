@@ -8,7 +8,10 @@ use tracing::info as log_info;
 use crate::config::Config;
 use crate::db::{self, HistoryRange};
 use crate::gpu::GpuQueryFn;
-use crate::models::{ApiGpuResponse, ApiHistoryResponse, ApiModelResponse, CheckResult, GpuHistoryPoint, MonitorStatus};
+use crate::models::{
+    ApiGpuResponse, ApiHistoryResponse, ApiModelResponse, CheckResult, GpuHistoryPoint,
+    MonitorStatus,
+};
 use crate::ollama::OllamaClient;
 use sqlx::SqlitePool;
 

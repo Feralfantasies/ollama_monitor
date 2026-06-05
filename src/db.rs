@@ -1,8 +1,8 @@
+use crate::models::CheckResult;
 /// SQLite persistence for GPU history metrics.
 use anyhow::Context;
-use crate::models::CheckResult;
 use chrono::Utc;
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use tracing::{debug, info};
 
 // ── Schema constants ─────────────────────────────────────
@@ -79,9 +79,18 @@ pub async fn open_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
         .await
         .context("Failed to connect to SQLite database")?;
 
-    sqlx::query("PRAGMA journal_mode=WAL;").execute(&pool).await.ok();
-    sqlx::query("PRAGMA busy_timeout = 5000;").execute(&pool).await.ok();
-    sqlx::query("PRAGMA auto_vacuum = FULL;").execute(&pool).await.ok();
+    sqlx::query("PRAGMA journal_mode=WAL;")
+        .execute(&pool)
+        .await
+        .ok();
+    sqlx::query("PRAGMA busy_timeout = 5000;")
+        .execute(&pool)
+        .await
+        .ok();
+    sqlx::query("PRAGMA auto_vacuum = FULL;")
+        .execute(&pool)
+        .await
+        .ok();
 
     Ok(pool)
 }
@@ -112,10 +121,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
 // ── Check results ──────────────────────────────────────────
 
 /// Insert a full check-result snapshot.
-pub async fn insert_check_result(
-    pool: &SqlitePool,
-    check: &CheckResult,
-) -> anyhow::Result<()> {
+pub async fn insert_check_result(pool: &SqlitePool, check: &CheckResult) -> anyhow::Result<()> {
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     sqlx::query(
@@ -226,8 +232,12 @@ mod tests {
 
     async fn setup_test_db() -> SqlitePool {
         // Use ":memory:" for a fresh, in-memory SQLite database per test.
-        let pool = open_pool(":memory:").await.expect("Failed to open test pool");
-        migrate(&pool).await.expect("Failed to run migrations on test pool");
+        let pool = open_pool(":memory:")
+            .await
+            .expect("Failed to open test pool");
+        migrate(&pool)
+            .await
+            .expect("Failed to run migrations on test pool");
         pool
     }
 
@@ -283,7 +293,9 @@ mod tests {
 
         // Insert three rows.
         for _ in 0..3 {
-            insert_check_result(&pool, &check).await.expect("Failed to insert");
+            insert_check_result(&pool, &check)
+                .await
+                .expect("Failed to insert");
         }
 
         let results = query_check_results(&pool).await.expect("Failed to query");

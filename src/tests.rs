@@ -16,7 +16,9 @@ use axum::routing::get;
 
 /// Start a lightweight axum "Ollama" server on a random localhost port.
 async fn start_mock_ollama() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock ollama");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock ollama");
     let addr = listener.local_addr().unwrap();
 
     let tags_handler = get(|| async {
@@ -120,7 +122,10 @@ async fn test_full_refresh_pipeline() {
     assert_eq!(status["loaded_model"].as_str().unwrap(), "llama3:8b");
     assert_eq!(status["gpu"]["temperature_c"].as_f64().unwrap(), 67.5);
     assert_eq!(status["gpu"]["memory_used_mib"].as_u64().unwrap(), 6144);
-    assert_eq!(status["gpu"]["name"].as_str().unwrap(), "NVIDIA GeForce RTX 3080");
+    assert_eq!(
+        status["gpu"]["name"].as_str().unwrap(),
+        "NVIDIA GeForce RTX 3080"
+    );
 
     // --- Verify /api/gpu ---
     let resp = client
@@ -144,7 +149,11 @@ async fn test_full_refresh_pipeline() {
     assert_eq!(models["total_count"].as_u64().unwrap(), 2);
 
     // --- Verify dashboard HTML ---
-    let resp = client.get(format!("http://{}", http_addr)).send().await.unwrap();
+    let resp = client
+        .get(format!("http://{}", http_addr))
+        .send()
+        .await
+        .unwrap();
     assert!(resp.status().is_success());
     assert!(resp.text().await.unwrap().contains("Ollama Monitor"));
 }
