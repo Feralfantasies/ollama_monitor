@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full", "signal"] }
@@ -13,3 +16,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 regex = "1"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+chrono = { version = "0.4", features = ["serde"] }

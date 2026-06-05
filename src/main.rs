@@ -1,9 +1,13 @@
 /// Ollama Monitor — main entry point.
 mod api;
 mod config;
+mod db;
 mod gpu;
 mod models;
 mod ollama;
+
+#[cfg(test)]
+mod tests;
 
 use anyhow::Result;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -18,7 +22,11 @@ async fn main() -> Result<()> {
     let config = config::Config::load();
     tracing::info!(?config, "Configuration loaded");
 
-    let state = api::AppState::default();
+    // Open SQLite history database.
+    let db_pool = db::open_pool("ollama_monitor.db").await?;
+    db::migrate(&db_pool).await?;
+
+    let state = api::AppState::new(db_pool);
 
     let cfg_clone = config.clone();
     let state_clone = state.clone();

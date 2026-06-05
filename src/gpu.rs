@@ -5,6 +5,9 @@ use tracing::{debug, warn};
 
 use crate::models::GpuMetric;
 
+/// Type alias for a GPU query function, used for injecting mocks in tests.
+pub type GpuQueryFn = fn(usize) -> GpuMetric;
+
 /// Query structured GPU data via nvidia-smi CSV mode (no header).
 pub fn query_gpu(device_index: usize) -> Result<GpuMetric> {
     let output = Command::new("nvidia-smi")
