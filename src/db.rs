@@ -2,7 +2,10 @@ use crate::models::CheckResult;
 /// SQLite persistence for GPU history metrics.
 use anyhow::Context;
 use chrono::Utc;
-use sqlx::{Row, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode},
+    Row, SqlitePool,
+};
 use tracing::{debug, info};
 
 // ── Schema constants ─────────────────────────────────────
@@ -74,23 +77,16 @@ impl HistoryRange {
 
 /// Open (or create) the SQLite database and return a connection pool.
 pub async fn open_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
-    let dsn = format!("sqlite://{db_path}");
-    let pool = SqlitePool::connect(&dsn)
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .auto_vacuum(SqliteAutoVacuum::Full);
+
+    let pool = SqlitePool::connect_with(options)
         .await
         .context("Failed to connect to SQLite database")?;
-
-    sqlx::query("PRAGMA journal_mode=WAL;")
-        .execute(&pool)
-        .await
-        .ok();
-    sqlx::query("PRAGMA busy_timeout = 5000;")
-        .execute(&pool)
-        .await
-        .ok();
-    sqlx::query("PRAGMA auto_vacuum = FULL;")
-        .execute(&pool)
-        .await
-        .ok();
 
     Ok(pool)
 }
@@ -104,15 +100,17 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
 
     info!("Database schema ready");
 
-    let deleted_check = sqlx::query(VACUUM_CHECK_SQL)
+    // Prune stale rows — silently skip on first run when the table is newly created.
+    let result = sqlx::query(VACUUM_CHECK_SQL)
         .execute(pool)
-        .await
-        .context("Failed to prune stale check_results rows")?;
-    if deleted_check.rows_affected() > 0 {
-        debug!(
-            "Pruned {} stale check_results rows",
-            deleted_check.rows_affected()
-        );
+        .await;
+    if let Ok(deleted_check) = result {
+        if deleted_check.rows_affected() > 0 {
+            debug!(
+                "Pruned {} stale check_results rows",
+                deleted_check.rows_affected()
+            );
+        }
     }
 
     Ok(())
@@ -231,8 +229,23 @@ mod tests {
     use super::*;
 
     async fn setup_test_db() -> SqlitePool {
-        // Use ":memory:" for a fresh, in-memory SQLite database per test.
-        let pool = open_pool(":memory:")
+        // Use a temp file with max_connections(1) so every query from this pool
+        // runs on the same SQLite connection — tables inserted are always visible,
+        // and no test interferes with another.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ollama_monitor_test_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let options =
+            SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
             .await
             .expect("Failed to open test pool");
         migrate(&pool)
