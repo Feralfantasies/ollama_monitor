@@ -1,1 +1,3 @@
 /target
+.turnlog/
+ollama_monitor.db*

@@ -1,15 +1,14 @@
 /// Axum REST API server + embedded web dashboard.
 use anyhow::Result;
 use axum::{extract::State, http::StatusCode, response::Html, routing::get, Router};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::info as log_info;
 
 use crate::config::Config;
 use crate::db::{self, HistoryRange};
-use crate::gpu::GpuQueryFn;
 use crate::models::{
-    ApiGpuResponse, ApiHistoryResponse, ApiModelResponse, CheckResult, GpuHistoryPoint,
+    ApiGpuResponse, ApiHistoryResponse, ApiModelResponse, CheckResult, GpuHistoryPoint, GpuMetric,
     MonitorStatus,
 };
 use crate::ollama::OllamaClient;
@@ -43,7 +42,11 @@ impl AppState {
 // ── Background refresh loop ──────────────────────────────
 
 /// Run a single iteration of the refresh loop, updating state and persisting to DB.
-pub async fn run_one_refresh(config: &Config, state: &AppState, gpu_fn: GpuQueryFn) {
+pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
+    config: &Config,
+    state: &AppState,
+    gpu_fn: &G,
+) {
     let client = OllamaClient::new(config.ollama_base_url());
 
     let tags_resp = client.try_fetch_models().await;
@@ -89,12 +92,11 @@ pub async fn run_one_refresh(config: &Config, state: &AppState, gpu_fn: GpuQuery
 }
 
 pub async fn run_refresh_loop(config: &Config, state: AppState) {
-    let gpu_fn: GpuQueryFn = crate::gpu::try_query_gpu;
     let interval = Duration::from_secs(config.refresh_interval_secs);
 
     loop {
         tokio::time::sleep(interval).await;
-        run_one_refresh(config, &state, gpu_fn).await;
+        run_one_refresh(config, &state, &crate::gpu::try_query_gpu).await;
     }
 }
 
@@ -152,9 +154,10 @@ async fn handle_api_models(
 
 async fn handle_api_history(
     State(state): State<AppState>,
-    axum::extract::Query(range): axum::extract::Query<String>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Result<axum::Json<ApiHistoryResponse>, (StatusCode, String)> {
-    let range = HistoryRange::parse(&range);
+    let range = params.get("range").map(|s| s.as_str()).unwrap_or("15m");
+    let range = HistoryRange::parse(range);
 
     let rows = db::query_history(&state.db_pool, range)
         .await
