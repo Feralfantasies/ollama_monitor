@@ -1,7 +1,7 @@
 /// Axum REST API server + embedded web dashboard.
 use anyhow::Result;
 use axum::{extract::State, http::StatusCode, response::Html, routing::get, Router};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::info as log_info;
 
@@ -154,9 +154,10 @@ async fn handle_api_models(
 
 async fn handle_api_history(
     State(state): State<AppState>,
-    axum::extract::Query(range): axum::extract::Query<String>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Result<axum::Json<ApiHistoryResponse>, (StatusCode, String)> {
-    let range = HistoryRange::parse(&range);
+    let range = params.get("range").map(|s| s.as_str()).unwrap_or("15m");
+    let range = HistoryRange::parse(range);
 
     let rows = db::query_history(&state.db_pool, range)
         .await

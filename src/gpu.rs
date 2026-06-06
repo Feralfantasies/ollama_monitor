@@ -5,9 +5,6 @@ use tracing::{debug, warn};
 
 use crate::models::GpuMetric;
 
-/// Type alias for a GPU query function, used for injecting mocks in tests.
-pub type GpuQueryFn = fn(usize) -> GpuMetric;
-
 /// Query structured GPU data via `nvidia-smi` CSV mode (no header).
 ///
 /// Uses the system `$PATH` to locate the `nvidia-smi` binary.
@@ -72,7 +69,7 @@ fn parse_gpu_csv_line(line: &str, expected_index: usize) -> Result<GpuMetric> {
     let mem_used_raw = parts.get(parts.len() - 4).copied();
     let temp = parse_optional_f64(parts.get(parts.len() - 5).copied());
 
-    let name_fields: Vec<_> = parts[1..parts.len() - 6].to_vec();
+    let name_fields: Vec<_> = parts[1..parts.len() - 5].to_vec();
     let name = if !name_fields.is_empty() {
         Some(name_fields.join(", "))
     } else {

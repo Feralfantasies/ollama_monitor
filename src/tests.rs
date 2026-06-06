@@ -149,7 +149,7 @@ async fn test_full_pipeline_history_accumulates() {
     let config = cfg_for_ollama(&ollama_url);
 
     for _ in 0..3 {
-        api::run_one_refresh(&config, &state, gpu_fn).await;
+        api::run_one_refresh(&config, &state, &gpu_fn).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
@@ -173,8 +173,8 @@ async fn test_full_pipeline_history_accumulates() {
         .unwrap();
     assert_eq!(history.len(), 3, "history should have 3 points");
     for (_ts, mem, temp) in &history {
-        assert_eq!(mem, Some(6144));
-        assert_eq!(temp, Some(67.5));
+        assert_eq!(*mem, Some(6144));
+        assert_eq!(*temp, Some(67.5));
     }
 
     let latest = state.latest_status.read().await;
@@ -194,17 +194,15 @@ async fn test_history_timestamps_ordered() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mock_nvidia_dir = create_mock_nvidia_smi(DEFAULT_GPU_CSV);
-    let gpu_fn = crate::gpu::test_gpu_fn(
-        mock_nvidia_dir.join("nvidia-smi").to_string_lossy().to_string(),
-    );
+    let gpu_fn = mock_gpu_with_bin(&mock_nvidia_dir);
 
     let pool = open_test_pool().await;
     let state = api::AppState::new(pool.clone());
     let config = cfg_for_ollama(&ollama_url);
 
     for _ in 0..4 {
-        api::run_one_refresh(&config, &state, &*gpu_fn).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        api::run_one_refresh(&config, &state, &gpu_fn).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
     let history = db::query_history(&pool, db::HistoryRange::Last15Minutes)
@@ -240,7 +238,7 @@ async fn test_unreachable_ollama_records_correctly() {
         gpu_device_index: 0,
     };
 
-    api::run_one_refresh(&config, &state, gpu_fn).await;
+    api::run_one_refresh(&config, &state, &gpu_fn).await;
 
     let results = db::query_check_results(&pool).await.unwrap();
     assert_eq!(results.len(), 1);
@@ -268,7 +266,7 @@ async fn test_no_gpu_records_nulls() {
     let state = api::AppState::new(pool.clone());
     let config = cfg_for_ollama(&ollama_url);
 
-    api::run_one_refresh(&config, &state, no_gpu_fn).await;
+    api::run_one_refresh(&config, &state, &no_gpu_fn).await;
 
     let results = db::query_check_results(&pool).await.unwrap();
     assert_eq!(results.len(), 1);
@@ -298,13 +296,13 @@ async fn test_mixed_gpu_availability() {
     let state = api::AppState::new(pool.clone());
     let config = cfg_for_ollama(&ollama_url);
 
-    api::run_one_refresh(&config, &state, good_fn).await;
+    api::run_one_refresh(&config, &state, &good_fn).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
-    api::run_one_refresh(&config, &state, good_fn).await;
+    api::run_one_refresh(&config, &state, &good_fn).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
-    api::run_one_refresh(&config, &state, no_gpu_fn).await;
+    api::run_one_refresh(&config, &state, &no_gpu_fn).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
-    api::run_one_refresh(&config, &state, good_fn).await;
+    api::run_one_refresh(&config, &state, &good_fn).await;
 
     let results = db::query_check_results(&pool).await.unwrap();
     assert_eq!(results.len(), 4);
@@ -337,7 +335,7 @@ async fn test_dashboard_api_endpoints() {
     let config = cfg_for_ollama(&ollama_url);
 
     for _ in 0..2 {
-        api::run_one_refresh(&config, &state, gpu_fn).await;
+        api::run_one_refresh(&config, &state, &gpu_fn).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
