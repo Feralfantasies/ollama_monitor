@@ -101,9 +101,7 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     info!("Database schema ready");
 
     // Prune stale rows — silently skip on first run when the table is newly created.
-    let result = sqlx::query(VACUUM_CHECK_SQL)
-        .execute(pool)
-        .await;
+    let result = sqlx::query(VACUUM_CHECK_SQL).execute(pool).await;
     if let Ok(deleted_check) = result {
         if deleted_check.rows_affected() > 0 {
             debug!(
@@ -241,8 +239,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let options =
-            SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)

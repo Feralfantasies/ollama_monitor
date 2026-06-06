@@ -3,13 +3,13 @@
 //! and we verify the DB history it produces.
 
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::api;
 use crate::config::Config;
 use crate::db;
-use crate::gpu::GpuQueryFn;
 use crate::models::GpuMetric;
 use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
@@ -30,7 +30,9 @@ async fn open_test_pool() -> sqlx::SqlitePool {
             .unwrap()
             .as_nanos()
     ));
-    let options = SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
@@ -77,8 +79,7 @@ async fn start_mock_ollama() -> String {
 // - Mock nvidia-smi binary ---------------------------------------------
 
 /// CSV line the mock nvidia-smi should print.
-const DEFAULT_GPU_CSV: &str =
-    "0, NVIDIA GeForce RTX 3080, 67.5, 6144, 10240, 82.0, 245.0\n";
+const DEFAULT_GPU_CSV: &str = "0, NVIDIA GeForce RTX 3080, 67.5, 6144, 10240, 82.0, 245.0\n";
 
 /// Write a shell script named `nvidia-smi` to a temp dir.
 fn create_mock_nvidia_smi(csv_output: &str) -> PathBuf {
@@ -105,7 +106,8 @@ fn create_mock_nvidia_smi(csv_output: &str) -> PathBuf {
 }
 
 /// GPU-query fn that calls the mock nvidia-smi at the given directory.
-fn mock_gpu_with_bin(bin_dir: &Path) -> GpuQueryFn {
+/// Works because `run_one_refresh` is now generic over `Fn(usize) -> GpuMetric`.
+fn mock_gpu_with_bin(bin_dir: &Path) -> impl Fn(usize) -> GpuMetric {
     let bin_str = bin_dir.join("nvidia-smi").to_string_lossy().to_string();
     move |idx: usize| -> GpuMetric {
         match crate::gpu::query_gpu_bin(&bin_str, idx) {
@@ -166,11 +168,13 @@ async fn test_full_pipeline_history_accumulates() {
         assert_eq!(row.gpu_power_watts, Some(245.0));
     }
 
-    let history = db::query_history(&pool, db::HistoryRange::Last15Minutes).await.unwrap();
+    let history = db::query_history(&pool, db::HistoryRange::Last15Minutes)
+        .await
+        .unwrap();
     assert_eq!(history.len(), 3, "history should have 3 points");
-    for point in &history {
-        assert_eq!(point.memory_used_mib, Some(6144));
-        assert_eq!(point.temperature_c, Some(67.5));
+    for (_ts, mem, temp) in &history {
+        assert_eq!(mem, Some(6144));
+        assert_eq!(temp, Some(67.5));
     }
 
     let latest = state.latest_status.read().await;
@@ -190,23 +194,27 @@ async fn test_history_timestamps_ordered() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mock_nvidia_dir = create_mock_nvidia_smi(DEFAULT_GPU_CSV);
-    let gpu_fn = mock_gpu_with_bin(&mock_nvidia_dir);
+    let gpu_fn = crate::gpu::test_gpu_fn(
+        mock_nvidia_dir.join("nvidia-smi").to_string_lossy().to_string(),
+    );
 
     let pool = open_test_pool().await;
     let state = api::AppState::new(pool.clone());
     let config = cfg_for_ollama(&ollama_url);
 
     for _ in 0..4 {
-        api::run_one_refresh(&config, &state, gpu_fn).await;
+        api::run_one_refresh(&config, &state, &*gpu_fn).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let history = db::query_history(&pool, db::HistoryRange::Last15Minutes).await.unwrap();
+    let history = db::query_history(&pool, db::HistoryRange::Last15Minutes)
+        .await
+        .unwrap();
     assert_eq!(history.len(), 4, "expected 4 history points");
 
     for i in 1..history.len() {
         assert!(
-            history[i].timestamp > history[i - 1].timestamp,
+            history[i].0 > history[i - 1].0,
             "timestamps should be strictly ascending"
         );
     }
@@ -254,7 +262,7 @@ async fn test_no_gpu_records_nulls() {
     let ollama_url = start_mock_ollama().await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let no_gpu_fn: GpuQueryFn = |_: usize| GpuMetric::placeholder();
+    let no_gpu_fn = |_idx: usize| GpuMetric::placeholder();
 
     let pool = open_test_pool().await;
     let state = api::AppState::new(pool.clone());
@@ -284,7 +292,7 @@ async fn test_mixed_gpu_availability() {
 
     let good_dir = create_mock_nvidia_smi(DEFAULT_GPU_CSV);
     let good_fn = mock_gpu_with_bin(&good_dir);
-    let no_gpu_fn: GpuQueryFn = |_: usize| GpuMetric::placeholder();
+    let no_gpu_fn = |_idx: usize| GpuMetric::placeholder();
 
     let pool = open_test_pool().await;
     let state = api::AppState::new(pool.clone());
@@ -336,25 +344,39 @@ async fn test_dashboard_api_endpoints() {
     let router = api::build_router(state.clone()).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http_addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let client = reqwest::Client::new();
     let base = format!("http://{}", http_addr);
 
-    let resp = client.get(format!("{}/api/status", base)).send().await.unwrap();
+    let resp = client
+        .get(format!("{}/api/status", base))
+        .send()
+        .await
+        .unwrap();
     assert!(resp.status().is_success());
     let status: serde_json::Value = resp.json().await.unwrap();
     assert!(status["ollama_reachable"].as_bool().unwrap());
     assert_eq!(status["loaded_model"].as_str().unwrap(), "llama3:8b");
     assert_eq!(status["gpu"]["temperature_c"].as_f64().unwrap(), 67.5);
 
-    let resp = client.get(format!("{}/api/gpu", base)).send().await.unwrap();
+    let resp = client
+        .get(format!("{}/api/gpu", base))
+        .send()
+        .await
+        .unwrap();
     assert!(resp.status().is_success());
     let gpu: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(gpu["gpu"]["temperature_c"].as_f64().unwrap(), 67.5);
 
-    let resp = client.get(format!("{}/api/models", base)).send().await.unwrap();
+    let resp = client
+        .get(format!("{}/api/models", base))
+        .send()
+        .await
+        .unwrap();
     assert!(resp.status().is_success());
     let models: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(models["total_count"].as_u64().unwrap(), 2);
