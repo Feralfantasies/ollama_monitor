@@ -1,6 +1,6 @@
 # Ollama Monitor
 
-A Rust-based monitoring tool for Ollama that collects GPU and model information and exposes it via a REST API and web dashboard. Designed for later Home Assistant integration.
+A Rust-based monitoring tool for Ollama that collects GPU and model information and exposes it via a REST API, web dashboard, and a native [Home Assistant custom integration](#home-assistant-integration). All configuration via environment variables — no config files needed — making it easy to deploy with systemd or Docker.
 
 All configuration is via **environment variables** — no config files needed — making it easy to deploy with systemd or Docker.
 
@@ -253,16 +253,73 @@ All tests run **without a real GPU or running Ollama instance** — they use:
 | `GET /api/gpu`         | GPU metrics only                   |
 | `GET /api/models`      | Model information only             |
 
-## Home Assistant Integration (planned)
+## Home Assistant Integration
 
-The `/api/status` endpoint returns flat JSON suitable for HA `rest` sensors:
+The ollama_monitor ships with a **native Home Assistant custom integration** — no YAML, no MQTT, no terminal access needed. Once installed, your GPU and Ollama metrics appear as real HA sensors that you can use in dashboards, automations, and graphs.
+
+### Installation
+
+#### Option 1: HACS (Recommended)
+
+1. Open **HACS** → **Integrations** → **⋮** (top right) → **Custom repositories**.
+2. Enter this repo URL: `https://github.com/acleveland/ollama_monitor`
+3. Set the category to **Integration** and click **Add**.
+4. Search for **Ollama Monitor** and click **Download**.
+5. **Restart** Home Assistant.
+
+#### Option 2: Manual Installation
+
+Copy the integration folder into your Home Assistant config directory:
+
+```bash
+# Inside your HA config directory (usually /config or ~/.homeassistant)
+mkdir -p custom_components/ollama_monitor
+cp -r /path/to/ollama_monitor/ha_integration/custom_components/ollama_monitor/* \
+    custom_components/ollama_monitor/
+```
+
+Then **restart Home Assistant**.
+
+### Setup (no YAML needed)
+
+1. Go to **Settings** → **Devices & Services** → **Add Integration**.
+2. Search for **Ollama Monitor** and select it.
+3. Enter the URL of your running ollama_monitor instance (e.g., `http://192.168.1.10:3000`).
+4. The integration will test the connection and add the sensors automatically.
+
+### Sensors Created
+
+All sensors appear under a single **Ollama Monitor** device entry:
+
+| Sensor | Entity ID | Unit | Attributes |
+|---|---|---|---|
+| **Ollama Status** | `sensor.ollama_monitor_ollama_status` | — | `loaded_model`, `model_count`, `ollama_url` |
+| **GPU Temperature** | `sensor.ollama_monitor_gpu_temperature` | °C | `gpu_name` |
+| **GPU Memory Used** | `sensor.ollama_monitor_gpu_memory_used` | MiB | `gpu_name`, `memory_total_mib`, `memory_remaining_mib`, `memory_usage_pct` |
+| **GPU Utilization** | `sensor.ollama_monitor_gpu_utilization` | % | `gpu_name` |
+| **GPU Power** | `sensor.ollama_monitor_gpu_power` | W | `gpu_name` |
+
+All numeric sensors have proper `state_class` values (`measurement`) so Home Assistant can generate statistics and history graphs automatically.
+
+### Dashboard Example
+
+You can add any of these sensors to your HA dashboard using the standard **Entities** card or **Gauges** card for visual metrics.
+
+### Troubleshooting
+
+- **"Could not connect"** during setup — Make sure the ollama_monitor binary is running and the URL is correct from the machine running Home Assistant. Test with `curl http://<monitor-ip>:3000/api/status` from the HA host.
+- **Sensors showing `unknown`** — Check that ollama_monitor's own logs show healthy refreshes (`journalctl -u ollama_monitor -f`). GPU sensors will be `unknown` if `nvidia-smi` isn't available.
+- **Integration doesn't appear** — After manual install, you must **restart Home Assistant**. Check the logs for errors: `logger: custom_components.ollama_monitor` in your HA config.
+
+## Home Assistant REST API (Alternative / Legacy)
+
+The `/api/status` endpoint also returns JSON suitable for HA `rest` sensors if you prefer not to use the custom integration:
 
 ```yaml
-# Future example
 sensor:
   - platform: rest
     resource: http://<monitor-ip>:3000/api/status
-    value_template: "{{ value_json.gpu.temperature }}"
+    value_template: "{{ value_json.gpu.temperature_c }}"
     name: "Ollama GPU Temperature"
     unit_of_measurement: "°C"
 ```
