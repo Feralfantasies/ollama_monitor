@@ -8,8 +8,8 @@ use tracing::info as log_info;
 use crate::config::Config;
 use crate::db::{self, HistoryRange};
 use crate::models::{
-    ApiGpuResponse, ApiHistoryResponse, ApiModelResponse, CheckResult, GpuHistoryPoint, GpuMetric,
-    MonitorStatus,
+    ApiGpuResponse, ApiHistoryResponse, ApiModelResponse, ApiSystemHistoryResponse,
+    ApiSystemResponse, CheckResult, GpuHistoryPoint, GpuMetric, MonitorStatus, SystemHistoryPoint,
 };
 use crate::ollama::OllamaClient;
 use sqlx::SqlitePool;
@@ -60,12 +60,15 @@ pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
 
     let gpu_metric = gpu_fn(config.gpu_device_index);
 
+    let system_metric = crate::system::query_system();
+
     let status = MonitorStatus {
         ollama_url: config.ollama_base_url(),
         ollama_reachable: tags_resp.is_some(),
         loaded_model: loaded_model.clone(),
         available_models: available.clone(),
         gpu: gpu_metric.clone(),
+        system: system_metric.clone(),
         timestamp: now_ts(),
     };
 
@@ -81,6 +84,11 @@ pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
         gpu_memory_total_mib: gpu_metric.memory_total_mib,
         gpu_utilization_pct: gpu_metric.utilization_pct,
         gpu_power_watts: gpu_metric.power_watts,
+        sys_memory_used_mib: system_metric.memory_used_mib,
+        sys_memory_total_mib: system_metric.memory_total_mib,
+        sys_memory_remaining_mib: system_metric.memory_remaining_mib,
+        sys_memory_usage_pct: system_metric.memory_usage_pct,
+        sys_cpu_utilization_pct: system_metric.cpu_utilization_pct,
     };
 
     if let Err(e) = db::insert_check_result(&state.db_pool, &check).await {
@@ -180,6 +188,50 @@ async fn handle_api_history(
     Ok(axum::Json(ApiHistoryResponse { points }))
 }
 
+async fn handle_api_system(
+    State(state): State<AppState>,
+) -> Result<axum::Json<ApiSystemResponse>, (StatusCode, String)> {
+    let latest = state.latest_status.read().await;
+    match latest.as_ref() {
+        Some(s) => Ok(axum::Json(ApiSystemResponse {
+            system: s.system.clone(),
+            timestamp: s.timestamp.clone(),
+        })),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "First refresh not yet complete".into(),
+        )),
+    }
+}
+
+async fn handle_api_sys_history(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Result<axum::Json<ApiSystemHistoryResponse>, (StatusCode, String)> {
+    let range = params.get("range").map(|s| s.as_str()).unwrap_or("15m");
+    let range = HistoryRange::parse(range);
+
+    let rows = db::query_system_history(&state.db_pool, range)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to query system history: {}", e),
+            )
+        })?;
+
+    let points = rows
+        .into_iter()
+        .map(|(ts, mem, cpu)| SystemHistoryPoint {
+            timestamp: ts,
+            memory_used_mib: mem,
+            cpu_utilization_pct: cpu,
+        })
+        .collect();
+
+    Ok(axum::Json(ApiSystemHistoryResponse { points }))
+}
+
 // ── Router builder ───────────────────────────────────────
 
 pub async fn build_router(state: AppState) -> Router {
@@ -189,6 +241,8 @@ pub async fn build_router(state: AppState) -> Router {
         .route("/api/gpu", get(handle_api_gpu))
         .route("/api/models", get(handle_api_models))
         .route("/api/history", get(handle_api_history))
+        .route("/api/system", get(handle_api_system))
+        .route("/api/sys-history", get(handle_api_sys_history))
         .with_state(state)
 }
 
@@ -206,7 +260,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Ollama Monitor</title>
 <style>
-:root{--bg:#1a1b26;--card:#24283b;--text:#c0caf5;--accent:#7aa2f7;--ok:#9ece6a;--warn:#e0af68;--err:#f7768e;--muted:#565f89;--mem:#7aa2f7;--temp:#f7768e}
+:root{--bg:#1a1b26;--card:#24283b;--text:#c0caf5;--accent:#7aa2f7;--ok:#9ece6a;--warn:#e0af68;--err:#f7768e;--muted:#565f89;--mem:#7aa2f7;--temp:#f7768e;--sysmem:#9ece6a;--cpu:#e0af68}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:2rem}
 h1{text-align:center;margin-bottom:1.5rem;color:var(--accent)}
@@ -253,6 +307,13 @@ h1{text-align:center;margin-bottom:1.5rem;color:var(--accent)}
     <div class="metric"><span class="label">Temperature</span><span class="value" id="gp">—</span></div>
     <div class="metric"><span class="label">Utilisation</span><span class="value" id="gu">—</span></div>
     <div class="metric"><span class="label">Power</span><span class="value" id="gpw">—</span></div></div>
+  <div class="card"><h2>System Memory</h2>
+    <div class="metric"><span class="label">Used</span><span class="value" id="smu">—</span></div>
+    <div class="metric"><span class="label">Total</span><span class="value" id="smt">—</span></div>
+    <div class="metric"><span class="label">Remaining</span><span class="value" id="smr">—</span></div>
+    <div class="bar-bg"><div class="bar-fill" id="smb" style="width:0%"></div></div></div>
+  <div class="card"><h2>CPU</h2>
+    <div class="metric"><span class="label">Utilisation</span><span class="value" id="cpu">—</span></div></div>
 
   <div class="card full-width">
     <h2>GPU History</h2>
@@ -277,6 +338,33 @@ h1{text-align:center;margin-bottom:1.5rem;color:var(--accent)}
       <span class="chart-hint" id="tempHint"></span>
     </div>
   </div>
+
+  <div class="card full-width">
+    <h2>System History</h2>
+    <div class="range-bar" id="sysRangeBar">
+      <button data-range="15m" class="active">15 min</button>
+      <button data-range="1h">1 hour</button>
+      <button data-range="6h">6 hours</button>
+      <button data-range="1d">1 day</button>
+      <button data-range="7d">7 days</button>
+      <button data-range="30d">30 days</button>
+    </div>
+    <div class="chart-legend">
+      <span><span class="swatch" style="background:var(--sysmem)"></span>Memory (MiB)</span>
+      <span><span class="swatch" style="background:var(--cpu)"></span>CPU (%)</span>
+    </div>
+    <div class="chart-wrap" id="sysMemWrap">
+      <canvas id="sysMemChart"></canvas>
+      <div class="chart-tooltip" id="sysMemTT"></div>
+      <span class="chart-hint" id="sysMemHint"></span>
+    </div>
+    <div style="margin-top:12px"></div>
+    <div class="chart-wrap" id="cpuWrap">
+      <canvas id="cpuChart"></canvas>
+      <div class="chart-tooltip" id="cpuTT"></div>
+      <span class="chart-hint" id="cpuHint"></span>
+    </div>
+  </div>
 </div><p id="ts">Loading…</p>
 <script>
 function $e(i){return document.getElementById(i);}function v(x){return x!=null?Math.round(x):'—';}
@@ -289,11 +377,16 @@ async function refresh(){
     var e=$e('reach');e.innerHTML=d.ollama_reachable?'<span class="dot" style="background:var(--ok)"></span>Yes':'<span class="dot" style="background:var(--err)"></span>No';
     $e('loaded').textContent=d.loaded_model||'None';
     $e('avail').textContent=d.available_models.length+' model(s)';
+    // GPU
     $e('mu').textContent=v(d.gpu.memory_used_mib)+' MiB';$e('mt').textContent=v(d.gpu.memory_total_mib)+' MiB';$e('mr').textContent=v(d.gpu.memory_remaining_mib)+' MiB';
     if(d.gpu.memory_total_mib>0){var p=Math.round(d.gpu.memory_used_mib/d.gpu.memory_total_mib*100);var b=$e('mb');b.style.width=p+'%';b.style.background=p>90?'var(--err)':p>70?'var(--warn)':'var(--ok)';}
     $e('gn').textContent=d.gpu.name||'—';
     e=$e('gp');e.textContent=(d.gpu.temperature_c!=null)?d.gpu.temperature_c.toFixed(1)+' °C':'—';e.className='value '+(d.gpu.temperature_c>80?'err':d.gpu.temperature_c>65?'warn':'ok');
     $e('gu').textContent=v(d.gpu.utilization_pct)+'%';$e('gpw').textContent=v(d.gpu.power_watts)+' W';
+    // System
+    $e('smu').textContent=v(d.system.memory_used_mib)+' MiB';$e('smt').textContent=v(d.system.memory_total_mib)+' MiB';$e('smr').textContent=v(d.system.memory_remaining_mib)+' MiB';
+    if(d.system.memory_total_mib>0){var sp=Math.round(d.system.memory_used_mib/d.system.memory_total_mib*100);var sb=$e('smb');sb.style.width=sp+'%';sb.style.background=sp>90?'var(--err)':sp>70?'var(--warn)':'var(--ok)';}
+    e=$e('cpu');e.textContent=(d.system.cpu_utilization_pct!=null)?d.system.cpu_utilization_pct.toFixed(1)+' %':'—';e.className='value '+(d.system.cpu_utilization_pct>90?'err':d.system.cpu_utilization_pct>60?'warn':'ok');
     $e('ts').textContent='Last updated: '+new Date().toLocaleTimeString();
   }catch(e){$e('ts').textContent='Error: '+e.message;}
 }
@@ -305,7 +398,7 @@ function formatTime(ts,range){
   return(d.getMonth()+1)+'/'+d.getDate()+' '+d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
 }
 
-function drawChart(canvasId,dataKey,color,range,minVal,maxVal){
+function drawChart(canvasId,dataKey,color,range,minVal,maxVal,data){
   var canvas=$e(canvasId),ctx=canvas.getContext('2d');
   var rect=canvas.parentElement.getBoundingClientRect();
   canvas.width=rect.width*devicePixelRatio;canvas.height=rect.height*devicePixelRatio;
@@ -324,9 +417,9 @@ function drawChart(canvasId,dataKey,color,range,minVal,maxVal){
     ctx.fillText(label,P.l-8,y);
   }
 
-  if(!historyData||historyData.points.length<2){ctx.fillStyle='#565f89';ctx.font='13px system-ui';ctx.textAlign='center';ctx.fillText('No history data yet',W/2,H/2);return;}
+  if(!data||data.length<2){ctx.fillStyle='#565f89';ctx.font='13px system-ui';ctx.textAlign='center';ctx.fillText('No history data yet',W/2,H/2);return;}
 
-  var pts=historyData.points.filter(function(p){var val=p[dataKey];return val!=null&&val!==undefined;});
+  var pts=data.filter(function(p){var val=p[dataKey];return val!=null&&val!==undefined;});
   if(pts.length<2){ctx.fillStyle='#565f89';ctx.font='13px system-ui';ctx.textAlign='center';ctx.fillText('No '+dataKey+' data',W/2,H/2);return;}
 
   // X-axis labels
@@ -364,7 +457,7 @@ function drawChart(canvasId,dataKey,color,range,minVal,maxVal){
     var idx=Math.round(((mx-P.l)/cW)*(pts.length-1));
     idx=Math.max(0,Math.min(idx,pts.length-1));
     tip.style.display='block';tip.style.left=(mx+10)+'px';tip.style.top=(my-10)+'px';
-    tip.innerHTML='<div class="tt-label">'+formatTime(pts[idx].timestamp,range)+'</div>'+pts[idx][dataKey].toFixed(1)+(dataKey==='memory_used_mib'?' MiB':' °C');
+    tip.innerHTML='<div class="tt-label">'+formatTime(pts[idx].timestamp,range)+'</div>'+pts[idx][dataKey].toFixed(1)+(dataKey==='memory_used_mib'?' MiB':dataKey==='cpu_utilization_pct'?' %':' °C');
   };
   canvas.onmouseleave=function(){ $e(canvasId.replace('Chart','TT')).style.display='none';};
 }
@@ -385,24 +478,50 @@ async function loadHistory(){
     memMin=Math.max(0,memMin);tempMin=Math.max(0,tempMin);
     $e('memHint').textContent=memVals.length?memVals.length+' data points':'No data';
     $e('tempHint').textContent=tempVals.length?tempVals.length+' data points':'No data';
-    drawChart('memChart','memory_used_mib','rgb(122,162,247)',range,memMin,memMax);
-    drawChart('tempChart','temperature_c','rgb(247,118,142)',range,tempMin,tempMax);
+    drawChart('memChart','memory_used_mib','rgb(122,162,247)',range,memMin,memMax,historyData.points);
+    drawChart('tempChart','temperature_c','rgb(247,118,142)',range,tempMin,tempMax,historyData.points);
   }catch(e){console.warn('history load:',e);}
 }
 
+async function loadSystemHistory(){
+  try{
+    var active=$e('sysRangeBar').querySelector('.active');
+    var range=active?active.dataset.range:'15m';
+    var r=await fetch('/api/sys-history?range='+range);
+    if(!r.ok)return;
+    sysHistoryData=await r.json();
+    var sysMemVals=sysHistoryData.points.map(function(p){return p.memory_used_mib;}).filter(function(v){return v!=null;});
+    var cpuVals=sysHistoryData.points.map(function(p){return p.cpu_utilization_pct;}).filter(function(v){return v!=null;});
+    var sysMemMin=sysMemVals.length?Math.floor(Math.min.apply(null,sysMemVals))*0.9:0;
+    var sysMemMax=sysMemVals.length?Math.ceil(Math.max.apply(null,sysMemVals)*1.1)||1024:1024;
+    var cpuMin=cpuVals.length?Math.max(0,Math.floor(Math.min.apply(null,cpuVals)-5)):0;
+    var cpuMax=cpuVals.length?Math.ceil(Math.max.apply(null,cpuVals)+5)||100:100;
+    sysMemMin=Math.max(0,sysMemMin);
+    $e('sysMemHint').textContent=sysMemVals.length?sysMemVals.length+' data points':'No data';
+    $e('cpuHint').textContent=cpuVals.length?cpuVals.length+' data points':'No data';
+    drawChart('sysMemChart','memory_used_mib','rgb(158,206,106)',range,sysMemMin,sysMemMax,sysHistoryData.points);
+    drawChart('cpuChart','cpu_utilization_pct','rgb(224,175,104)',range,cpuMin,cpuMax,sysHistoryData.points);
+  }catch(e){console.warn('sys history load:',e);}
+}
+
 var historyData=null;
+var sysHistoryData=null;
 
 // Range bar buttons
-document.querySelectorAll('#rangeBar button').forEach(function(btn){
-  btn.addEventListener('click',function(){
-    document.querySelectorAll('#rangeBar button').forEach(function(b){b.classList.remove('active');});
-    btn.classList.add('active');
-    loadHistory();
+function setupRangeBar(barId,loadFn){
+  document.querySelectorAll('#'+barId+' button').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      document.querySelectorAll('#'+barId+' button').forEach(function(b){b.classList.remove('active');});
+      btn.classList.add('active');
+      loadFn();
+    });
   });
-});
+}
+setupRangeBar('rangeBar',loadHistory);
+setupRangeBar('sysRangeBar',loadSystemHistory);
 
 // Init
-refresh();loadHistory();
-setInterval(function(){refresh();loadHistory();},30000);
-window.addEventListener('resize',loadHistory);
+refresh();loadHistory();loadSystemHistory();
+setInterval(function(){refresh();loadHistory();loadSystemHistory();},30000);
+window.addEventListener('resize',function(){loadHistory();loadSystemHistory();});
 </script></body></html>"#;
