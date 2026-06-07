@@ -28,6 +28,7 @@ pub struct MonitorStatus {
     pub loaded_model: Option<String>,
     pub available_models: Vec<String>,
     pub gpu: GpuMetric,
+    pub system: SystemMetric,
     pub timestamp: String,
 }
 
@@ -56,6 +57,29 @@ impl GpuMetric {
     }
 }
 
+// ── System metrics ───────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemMetric {
+    pub memory_used_mib: Option<u64>,
+    pub memory_total_mib: Option<u64>,
+    pub memory_remaining_mib: Option<u64>,
+    pub memory_usage_pct: Option<f64>,
+    pub cpu_utilization_pct: Option<f64>,
+}
+
+impl SystemMetric {
+    pub fn placeholder() -> Self {
+        Self {
+            memory_used_mib: None,
+            memory_total_mib: None,
+            memory_remaining_mib: None,
+            memory_usage_pct: None,
+            cpu_utilization_pct: None,
+        }
+    }
+}
+
 // ── Web API response types (subset views) ──────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,6 +96,12 @@ pub struct ApiGpuResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ApiSystemResponse {
+    pub system: SystemMetric,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct GpuHistoryPoint {
     pub timestamp: i64,
     pub memory_used_mib: Option<u64>,
@@ -81,6 +111,18 @@ pub struct GpuHistoryPoint {
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiHistoryResponse {
     pub points: Vec<GpuHistoryPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemHistoryPoint {
+    pub timestamp: i64,
+    pub memory_used_mib: Option<u64>,
+    pub cpu_utilization_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiSystemHistoryResponse {
+    pub points: Vec<SystemHistoryPoint>,
 }
 
 // ── Database record for each check result ──────────────────
@@ -97,4 +139,9 @@ pub struct CheckResult {
     pub gpu_memory_total_mib: Option<u64>,
     pub gpu_utilization_pct: Option<f64>,
     pub gpu_power_watts: Option<f64>,
+    pub sys_memory_used_mib: Option<u64>,
+    pub sys_memory_total_mib: Option<u64>,
+    pub sys_memory_remaining_mib: Option<u64>,
+    pub sys_memory_usage_pct: Option<f64>,
+    pub sys_cpu_utilization_pct: Option<f64>,
 }
