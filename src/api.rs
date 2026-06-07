@@ -60,7 +60,12 @@ pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
 
     let gpu_metric = gpu_fn(config.gpu_device_index);
 
-    let system_metric = crate::system::query_system();
+    let system_metric = tokio::task::spawn_blocking(crate::system::query_system)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("spawn_blocking for system metrics panicked: {}", e);
+            crate::models::SystemMetric::placeholder()
+        });
 
     let status = MonitorStatus {
         ollama_url: config.ollama_base_url(),

@@ -88,50 +88,59 @@ fn read_meminfo() -> Result<(u64, u64)> {
     Ok((total, available))
 }
 
-/// Best-effort system metric collector — returns placeholder on failure.
+/// Best-effort system metric collector — returns per-field values for each
+/// metric that succeeded (memory and CPU are collected independently).
 pub fn query_system() -> SystemMetric {
     let mem_result = read_meminfo();
     let cpu_result = read_cpu_util();
 
-    let (total_kb, available_kb) = match mem_result {
-        Ok((t, a)) => (t, a),
-        Err(e) => {
-            warn!("Memory query failed: {}", e);
-            return SystemMetric::placeholder();
-        }
-    };
+    let (memory_used_mib, memory_total_mib, memory_remaining_mib, memory_usage_pct) =
+        match mem_result {
+            Ok((total_kb, available_kb)) => {
+                let used_kb = total_kb.saturating_sub(available_kb);
+                let usage_pct = if total_kb > 0 {
+                    100.0 - (available_kb as f64 / total_kb as f64) * 100.0
+                } else {
+                    0.0
+                };
+                (
+                    Some(used_kb / 1024),
+                    Some(total_kb / 1024),
+                    Some(available_kb / 1024),
+                    Some(usage_pct),
+                )
+            }
+            Err(e) => {
+                warn!("Memory query failed: {}", e);
+                (None, None, None, None)
+            }
+        };
 
-    let used_kb = total_kb.saturating_sub(available_kb);
-
-    let cpu_pct = match cpu_result {
-        Ok(v) => v,
+    let cpu_utilization_pct = match cpu_result {
+        Ok(v) => Some(v),
         Err(e) => {
             warn!("CPU query failed: {}", e);
-            return SystemMetric::placeholder();
+            None
         }
     };
 
-    let remaining_pct = if total_kb > 0 {
-        (available_kb as f64 / total_kb as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    let usage_pct = 100.0 - remaining_pct;
-
-    debug!(
-        "System memory: used={:.1} MiB, total={:.1} MiB, cpu={:.1}%",
-        used_kb as f64 / 1024.0,
-        total_kb as f64 / 1024.0,
-        cpu_pct
-    );
+    // Log debug info for whichever fields populated.
+    if let (Some(used), Some(total)) = (memory_used_mib, memory_total_mib) {
+        debug!(
+            "System memory: used={:.1} MiB, total={:.1} MiB",
+            used as f64, total as f64
+        );
+    }
+    if let Some(cpu) = cpu_utilization_pct {
+        debug!("System CPU utilization: {:.1}%", cpu);
+    }
 
     SystemMetric {
-        memory_used_mib: Some(used_kb / 1024),
-        memory_total_mib: Some(total_kb / 1024),
-        memory_remaining_mib: Some(available_kb / 1024),
-        memory_usage_pct: Some(usage_pct),
-        cpu_utilization_pct: Some(cpu_pct),
+        memory_used_mib,
+        memory_total_mib,
+        memory_remaining_mib,
+        memory_usage_pct,
+        cpu_utilization_pct,
     }
 }
 

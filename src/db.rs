@@ -103,6 +103,21 @@ pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
         .await
         .context("Failed to create check_results table")?;
 
+    // Add new columns to existing databases (idempotent — errors silently on
+    // fresh databases where the columns already exist from CREATE TABLE).
+    let column_migrations = [
+        "ALTER TABLE check_results ADD COLUMN gpu_power_watts REAL",
+        "ALTER TABLE check_results ADD COLUMN sys_memory_used_mib INTEGER",
+        "ALTER TABLE check_results ADD COLUMN sys_memory_total_mib INTEGER",
+        "ALTER TABLE check_results ADD COLUMN sys_memory_remaining_mib INTEGER",
+        "ALTER TABLE check_results ADD COLUMN sys_memory_usage_pct REAL",
+        "ALTER TABLE check_results ADD COLUMN sys_cpu_utilization_pct REAL",
+    ];
+
+    for migration in &column_migrations {
+        let _ = sqlx::query(migration).execute(pool).await;
+    }
+
     info!("Database schema ready");
 
     // Prune stale rows — silently skip on first run when the table is newly created.
@@ -353,6 +368,14 @@ mod tests {
         assert_eq!(row.gpu_memory_total_mib, sample.gpu_memory_total_mib);
         assert_eq!(row.gpu_utilization_pct, sample.gpu_utilization_pct);
         assert_eq!(row.gpu_power_watts, sample.gpu_power_watts);
+        assert_eq!(row.sys_memory_used_mib, sample.sys_memory_used_mib);
+        assert_eq!(row.sys_memory_total_mib, sample.sys_memory_total_mib);
+        assert_eq!(
+            row.sys_memory_remaining_mib,
+            sample.sys_memory_remaining_mib
+        );
+        assert_eq!(row.sys_memory_usage_pct, sample.sys_memory_usage_pct);
+        assert_eq!(row.sys_cpu_utilization_pct, sample.sys_cpu_utilization_pct);
     }
 
     #[tokio::test]
