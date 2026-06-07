@@ -217,6 +217,33 @@ sudo systemctl stop ollama_monitor
 sudo systemctl disable ollama_monitor
 ```
 
+## Testing
+
+Run:
+
+```bash
+cargo test
+```
+
+All tests run **without a real GPU or running Ollama instance** — they use:
+
+- **Mock Ollama HTTP server** — a lightweight [axum](https://crates.io/crates/axum) server started on a random port that returns deterministic model data on `/api/tags`.
+- **Mock `nvidia-smi` binary** — a shell script that prints the same CSV the real CLI produces, passed to `query_gpu_bin()` instead of the system binary.
+
+### Test matrix
+
+| Test | What it verifies |
+|------|------------------|
+| `test_full_pipeline_history_accumulates` | 3 refresh cycles → 3 DB rows, history query returns correct points |
+| `test_history_timestamps_ordered` | 4 cycles with gaps → timestamps strictly ascending |
+| `test_unreachable_ollama_records_correctly` | Ollama down → `ollama_reachable: false`, GPU still populated |
+| `test_no_gpu_records_nulls` | GPU placeholder → all GPU fields null, Ollama still recorded |
+| `test_mixed_gpu_availability` | Alternating GPU present/absent → DB tolerates mixed nulls |
+| `test_dashboard_api_endpoints` | Full HTTP API (`/api/status`, `/api/gpu`, `/api/models`, `/api/history`, `/`) |
+| `test_insert_and_query_check_result` | Unit test — DB insert then query round-trip |
+| `test_multiple_check_results_ordered_desc` | Unit test — multiple rows returned newest-first |
+| `test_insert_check_result_with_null_fields` | Unit test — all-null GPU row round-trip |
+
 ## API Endpoints
 
 | Endpoint               | Description                        |

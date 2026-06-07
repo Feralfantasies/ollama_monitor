@@ -80,6 +80,12 @@ impl Config {
     }
 
     pub fn ollama_base_url(&self) -> String {
-        format!("{}:{}", self.ollama_host, self.ollama_port)
+        // If ollama_host already contains a scheme (e.g. "http://127.0.0.1:12345"),
+        // treat it as a complete URL — useful for test mocks.
+        if self.ollama_host.starts_with("http://") || self.ollama_host.starts_with("https://") {
+            self.ollama_host.clone()
+        } else {
+            format!("{}:{}", self.ollama_host, self.ollama_port)
+        }
     }
 }
