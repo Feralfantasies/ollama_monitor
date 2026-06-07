@@ -257,69 +257,183 @@ All tests run **without a real GPU or running Ollama instance** — they use:
 
 The ollama_monitor ships with a **native Home Assistant custom integration** — no YAML, no MQTT, no terminal access needed. Once installed, your GPU and Ollama metrics appear as real HA sensors that you can use in dashboards, automations, and graphs.
 
+### Prerequisites
+
+1. **ollama_monitor is running** and serving its API (verify with `curl http://<monitor-ip>:3000/api/status`)
+2. Home Assistant can reach the monitor URL over the network
+3. If ollama_monitor runs in Docker with `--network host`, use the host IP. Otherwise use the container IP or published port
+
 ### Installation
 
 #### Option 1: HACS (Recommended)
 
-1. Open **HACS** → **Integrations** → **⋮** (top right) → **Custom repositories**.
-2. Enter this repo URL: `https://github.com/acleveland/ollama_monitor`
-3. Set the category to **Integration** and click **Add**.
-4. Search for **Ollama Monitor** and click **Download**.
-5. **Restart** Home Assistant.
+HACS (Home Assistant Community Store) makes installation and updates straightforward.
+
+1. Make sure **HACS** is installed in your Home Assistant instance (see [hacs.xyz](https://hacs.xyz))
+2. Open **HACS** → **Integrations** → click **⋮** (top right) → **Custom repositories**
+3. Enter this repo URL:
+   ```
+   https://github.com/Feralfantasies/ollama_monitor
+   ```
+4. Set **Category** to **Integration** and click **Add** (you'll be prompted to confirm — click the red warning popup)
+5. Go back to the Integrations list, search for **Ollama Monitor**, and click **Download**
+6. **Restart Home Assistant** (HACS will prompt you, or go to **Settings → System → Restart**)
 
 #### Option 2: Manual Installation
 
-Copy the integration folder into your Home Assistant config directory:
+Copy the integration folder into your Home Assistant `custom_components` directory:
 
 ```bash
-# Inside your HA config directory (usually /config or ~/.homeassistant)
-mkdir -p custom_components/ollama_monitor
+# From your ollama_monitor checkout, copy to your HA config folder
+# HA config is typically at:
+#   /config          (HA supervised/docker)
+#   ~/.homeassistant  (HA core)
+#   /usr/share/hassio/homeassistant  (HA OS)
+
+mkdir -p /config/custom_components/ollama_monitor
 cp -r /path/to/ollama_monitor/ha_integration/custom_components/ollama_monitor/* \
-    custom_components/ollama_monitor/
+    /config/custom_components/ollama_monitor/
 ```
 
 Then **restart Home Assistant**.
 
-### Setup (no YAML needed)
+> **After updating** the integration (manual install), delete the old folder first, copy the new version, and restart to clear any cached Python bytecode.
 
-1. Go to **Settings** → **Devices & Services** → **Add Integration**.
-2. Search for **Ollama Monitor** and select it.
-3. Enter the URL of your running ollama_monitor instance (e.g., `http://192.168.1.10:3000`).
-4. The integration will test the connection and add the sensors automatically.
+### Setup (GUI only — no YAML)
+
+1. Go to **Settings** → **Devices & Services** → click **⚡ Add integration** (bottom left)
+2. Search for **Ollama Monitor** and select it
+3. You'll see a form asking for the **Monitor URL**:
+   - Enter the base URL of your running ollama_monitor, e.g. `http://192.168.1.10:3000`
+   - The integration will **test the connection** immediately by hitting `/api/status`
+4. If the connection succeeds, click **Submit** — the sensors will appear automatically
+5. If it fails, double-check the URL and make sure ollama_monitor is running
 
 ### Sensors Created
 
 All sensors appear under a single **Ollama Monitor** device entry:
 
-| Sensor | Entity ID | Unit | Attributes |
+| Sensor | Unit | State Values | Attributes |
 |---|---|---|---|
-| **Ollama Status** | `sensor.ollama_monitor_ollama_status` | — | `loaded_model`, `model_count`, `ollama_url` |
-| **GPU Temperature** | `sensor.ollama_monitor_gpu_temperature` | °C | `gpu_name` |
-| **GPU Memory Used** | `sensor.ollama_monitor_gpu_memory_used` | MiB | `gpu_name`, `memory_total_mib`, `memory_remaining_mib`, `memory_usage_pct` |
-| **GPU Utilization** | `sensor.ollama_monitor_gpu_utilization` | % | `gpu_name` |
-| **GPU Power** | `sensor.ollama_monitor_gpu_power` | W | `gpu_name` |
+| **Ollama Status** | — | `online` / `offline` | `loaded_model`, `model_count`, `ollama_url` |
+| **GPU Temperature** | °C | numeric | `gpu_name` |
+| **GPU Memory Used** | MiB | numeric | `gpu_name`, `memory_total_mib`, `memory_remaining_mib`, `memory_usage_pct` |
+| **GPU Utilization** | % | numeric | `gpu_name` |
+| **GPU Power** | W | numeric | `gpu_name` |
 
-All numeric sensors have proper `state_class` values (`measurement`) so Home Assistant can generate statistics and history graphs automatically.
+All numeric sensors have `state_class: measurement` so Home Assistant automatically generates statistics and history graphs.
 
-### Dashboard Example
+### Dashboard Setup
 
-You can add any of these sensors to your HA dashboard using the standard **Entities** card or **Gauges** card for visual metrics.
+#### Quick: Entities Card
+
+The fastest way to see all values at once:
+
+1. Open **Settings** → **Dashboards** → click **+ Add card** → **Entities**
+2. Search for the ollama_monitor sensors (or use the entity IDs below) and add them
+3. Click **Save**
+
+#### Lovelace YAML: Overview Card
+
+For a polished dashboard, add this YAML to your dashboard (via **Edit dashboard → ⋮ → Edit in YAML**):
+
+```yaml
+- type: entities
+  title: Ollama Monitor
+  show_header_toggle: false
+  entities:
+    - type: custom:multiple-entity-row
+      entity: sensor.ollama_monitor_ollama_status
+      state_color: true
+    - sensor.ollama_monitor_gpu_temperature
+    - sensor.ollama_monitor_gpu_memory_used
+    - sensor.ollama_monitor_gpu_utilization
+    - sensor.ollama_monitor_gpu_power
+```
+
+#### Lovelace YAML: Gauges
+
+For visual GPU metrics:
+
+```yaml
+- type: horizontal-stack
+  cards:
+    - type: gauge
+      entity: sensor.ollama_monitor_gpu_temperature
+      min: 0
+      max: 100
+      unit: °C
+      severity:
+        green: 0
+        yellow: 70
+        red: 85
+    - type: gauge
+      entity: sensor.ollama_monitor_gpu_utilization
+      unit: '%'
+      severity:
+        green: 0
+        yellow: 50
+        red: 90
+    - type: gauge
+      entity: sensor.ollama_monitor_gpu_power
+      min: 0
+      max: 450
+      unit: W
+      severity:
+        green: 0
+        yellow: 250
+        red: 350
+```
+
+### Automation Examples
+
+#### Alert when GPU temperature is too high
+
+```yaml
+alias: GPU overheat warning
+trigger:
+  - platform: numeric_state
+    entity_id: sensor.ollama_monitor_gpu_temperature
+    above: 85
+action:
+  - service: persistent_notification.create
+    data:
+      title: GPU Overheat Warning
+      message: >
+        GPU temperature is {{ states('sensor.ollama_monitor_gpu_temperature') }}°C
+```
+
+#### Log when Ollama comes back online
+
+```yaml
+alias: Ollama back online
+trigger:
+  - platform: state
+    entity_id: sensor.ollama_monitor_ollama_status
+    from: offline
+    to: online
+action:
+  - service: system_log.write
+    data:
+      message: "Ollama is back online — model: {{ state_attr('sensor.ollama_monitor_ollama_status', 'loaded_model') }}"
+```
+
+> These YAML automations go in `automations.yaml` or can be created via **Settings → Automations & Scenes** → **⊕ Create automation** → **Start from scratch**. The entity references work identically in the GUI builder.
+
+### Using Sensors in Templates
+
+```jinja2
+{{ state_attr('sensor.ollama_monitor_ollama_status', 'loaded_model') }}
+{{ state_attr('sensor.ollama_monitor_gpu_memory_used', 'memory_usage_pct') }}%
+```
 
 ### Troubleshooting
 
-- **"Could not connect"** during setup — Make sure the ollama_monitor binary is running and the URL is correct from the machine running Home Assistant. Test with `curl http://<monitor-ip>:3000/api/status` from the HA host.
-- **Sensors showing `unknown`** — Check that ollama_monitor's own logs show healthy refreshes (`journalctl -u ollama_monitor -f`). GPU sensors will be `unknown` if `nvidia-smi` isn't available.
-- **Integration doesn't appear** — After manual install, you must **restart Home Assistant**. Check the logs for errors: `logger: custom_components.ollama_monitor` in your HA config.
-
-## Home Assistant REST API (Alternative / Legacy)
-
-The `/api/status` endpoint also returns JSON suitable for HA `rest` sensors if you prefer not to use the custom integration:
-
-```yaml
-sensor:
-  - platform: rest
-    resource: http://<monitor-ip>:3000/api/status
-    value_template: "{{ value_json.gpu.temperature_c }}"
-    name: "Ollama GPU Temperature"
-    unit_of_measurement: "°C"
-```
+| Problem | Solution |
+|---|---|
+| **"Could not connect" during setup** | Ensure ollama_monitor is running. Test from your HA host: `curl http://<monitor-ip>:3000/api/status`. Check firewalls, Docker network mode. |
+| **Sensors showing `unknown`** | Check ollama_monitor logs (`journalctl -u ollama_monitor -f`). GPU sensors will be `unknown` if `nvidia-smi` is not available on the host. |
+| **Integration doesn't appear after install** | You must **restart Home Assistant** after installing. Then go to **Settings → Devices & Services → Add integration** and search again. |
+| **No entities in dashboard** | After first setup, sensors take up to 15 seconds (one poll cycle) to appear. Refresh the page. |
+| **Cannot connect from Docker HA** | If ollama_monitor uses `--network host`, reference the host IP. If ollama_monitor is also in Docker, ensure they share a network or use the host bridge. |
+| **Check HA logs for errors** | Add to `configuration.yaml`: `logger:\n  logs:\n    custom_components.ollama_monitor: debug` |
