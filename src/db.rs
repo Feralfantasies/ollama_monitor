@@ -24,7 +24,12 @@ const CREATE_CHECK_RESULTS: &str = r#"
         gpu_memory_used_mib INTEGER,
         gpu_memory_total_mib INTEGER,
         gpu_utilization_pct REAL,
-        gpu_power_watts REAL
+        gpu_power_watts REAL,
+        sys_memory_used_mib INTEGER,
+        sys_memory_total_mib INTEGER,
+        sys_memory_remaining_mib INTEGER,
+        sys_memory_usage_pct REAL,
+        sys_cpu_utilization_pct REAL
     )
 "#;
 
@@ -127,8 +132,11 @@ pub async fn insert_check_result(pool: &SqlitePool, check: &CheckResult) -> anyh
             loaded_model, available_models_count,
             gpu_name, gpu_temperature_c,
             gpu_memory_used_mib, gpu_memory_total_mib,
-            gpu_utilization_pct, gpu_power_watts
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            gpu_utilization_pct, gpu_power_watts,
+            sys_memory_used_mib, sys_memory_total_mib,
+            sys_memory_remaining_mib, sys_memory_usage_pct,
+            sys_cpu_utilization_pct
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(now)
@@ -142,6 +150,11 @@ pub async fn insert_check_result(pool: &SqlitePool, check: &CheckResult) -> anyh
     .bind(check.gpu_memory_total_mib.map(|v| v as i64))
     .bind(check.gpu_utilization_pct)
     .bind(check.gpu_power_watts)
+    .bind(check.sys_memory_used_mib.map(|v| v as i64))
+    .bind(check.sys_memory_total_mib.map(|v| v as i64))
+    .bind(check.sys_memory_remaining_mib.map(|v| v as i64))
+    .bind(check.sys_memory_usage_pct)
+    .bind(check.sys_cpu_utilization_pct)
     .execute(pool)
     .await
     .context("Failed to insert check_results row")?;
@@ -183,6 +196,38 @@ pub async fn query_history(
     Ok(points)
 }
 
+/// System history rows within *range*, ordered ascending.
+/// Reads system memory + CPU utilisation from the `check_results` table.
+pub async fn query_system_history(
+    pool: &SqlitePool,
+    range: HistoryRange,
+) -> anyhow::Result<Vec<(i64, Option<u64>, Option<f64>)>> {
+    let interval = range.sqlite_interval();
+
+    let sql = format!(
+        "SELECT strftime('%s', recorded_at) * 1000 as ts, sys_memory_used_mib, sys_cpu_utilization_pct \
+         FROM check_results \
+         WHERE recorded_at >= datetime('now', '{}') \
+         ORDER BY recorded_at ASC",
+        interval
+    );
+
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool)
+        .await
+        .context("Failed to query system history")?;
+
+    let mut points = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let ts: i64 = row.try_get(0)?;
+        let memory_used_mib: Option<i64> = row.try_get(1)?;
+        let cpu_utilization: Option<f64> = row.try_get(2)?;
+        points.push((ts, memory_used_mib.map(|v| v as u64), cpu_utilization));
+    }
+
+    Ok(points)
+}
+
 /// All check-result rows ordered newest-first (most recent first).
 #[allow(dead_code)]
 pub async fn query_check_results(
@@ -191,7 +236,9 @@ pub async fn query_check_results(
     let sql = r#"
         SELECT ollama_url, ollama_reachable, loaded_model, available_models_count,
                gpu_name, gpu_temperature_c, gpu_memory_used_mib, gpu_memory_total_mib,
-               gpu_utilization_pct, gpu_power_watts
+               gpu_utilization_pct, gpu_power_watts,
+               sys_memory_used_mib, sys_memory_total_mib, sys_memory_remaining_mib,
+               sys_memory_usage_pct, sys_cpu_utilization_pct
         FROM check_results
         ORDER BY id DESC
     "#;
@@ -214,6 +261,11 @@ pub async fn query_check_results(
             gpu_memory_total_mib: row.try_get::<Option<i64>, _>(7)?.map(|v| v as u64),
             gpu_utilization_pct: row.try_get(8)?,
             gpu_power_watts: row.try_get(9)?,
+            sys_memory_used_mib: row.try_get::<Option<i64>, _>(10)?.map(|v| v as u64),
+            sys_memory_total_mib: row.try_get::<Option<i64>, _>(11)?.map(|v| v as u64),
+            sys_memory_remaining_mib: row.try_get::<Option<i64>, _>(12)?.map(|v| v as u64),
+            sys_memory_usage_pct: row.try_get(13)?,
+            sys_cpu_utilization_pct: row.try_get(14)?,
         });
     }
 
@@ -265,6 +317,11 @@ mod tests {
             gpu_memory_total_mib: Some(10240),
             gpu_utilization_pct: Some(82.0),
             gpu_power_watts: Some(245.0),
+            sys_memory_used_mib: Some(8192),
+            sys_memory_total_mib: Some(16384),
+            sys_memory_remaining_mib: Some(8192),
+            sys_memory_usage_pct: Some(50.0),
+            sys_cpu_utilization_pct: Some(35.0),
         }
     }
 
@@ -333,6 +390,11 @@ mod tests {
             gpu_memory_total_mib: None,
             gpu_utilization_pct: None,
             gpu_power_watts: None,
+            sys_memory_used_mib: None,
+            sys_memory_total_mib: None,
+            sys_memory_remaining_mib: None,
+            sys_memory_usage_pct: None,
+            sys_cpu_utilization_pct: None,
         };
 
         insert_check_result(&pool, &null_check)
