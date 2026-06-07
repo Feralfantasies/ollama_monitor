@@ -4,7 +4,7 @@
 ///
 /// | Variable                  | Default               | Description                        |
 /// |---------------------------|-----------------------|------------------------------------|
-/// | `OLLAMA_HOST`             | `http://127.0.0.1`      | Ollama server base URL             |
+/// | `OLLAMA_HOST`             | `http://127.0.0.1`      | Ollama server base URL (append `:port` explicitly, or omit to use `OLLAMA_PORT` default) |
 /// | `OLLAMA_PORT`             | `11434`               | Ollama server port                 |
 /// | `SERVER_BIND`             | `0.0.0.0`             | Address to bind the API server to  |
 /// | `SERVER_PORT`             | `3000`                | Port for the API server            |
@@ -80,10 +80,22 @@ impl Config {
     }
 
     pub fn ollama_base_url(&self) -> String {
-        // If ollama_host already contains a scheme (e.g. "http://127.0.0.1:12345"),
-        // treat it as a complete URL — useful for test mocks.
+        // If ollama_host already has a scheme, check whether a port is already specified.
+        // If not, append the configured OLLAMA_PORT. This handles:
+        //   "http://127.0.0.1"          → "http://127.0.0.1:11434"
+        //   "http://127.0.0.1:12345"    → "http://127.0.0.1:12345" (unchanged)
+        //   "127.0.0.1"                 → "127.0.0.1:11434"
         if self.ollama_host.starts_with("http://") || self.ollama_host.starts_with("https://") {
-            self.ollama_host.clone()
+            let host_part = self
+                .ollama_host
+                .strip_prefix("http://")
+                .or_else(|| self.ollama_host.strip_prefix("https://"))
+                .unwrap();
+            if host_part.contains(':') {
+                self.ollama_host.clone()
+            } else {
+                format!("{}:{}", self.ollama_host, self.ollama_port)
+            }
         } else {
             format!("{}:{}", self.ollama_host, self.ollama_port)
         }
