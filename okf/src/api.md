@@ -42,5 +42,5 @@ Single-file dark-themed HTML/JS dashboard with:
 
 ## See also
 
-- [REST API Reference](/api/api-reference.md) — Detailed request/response schema
+- [REST API Reference](../api/api-reference.md) — Detailed request/response schema
 - [Models Module](models.md) — `MonitorStatus` and other data structures

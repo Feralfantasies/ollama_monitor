@@ -150,5 +150,5 @@ System time-series history.
 
 ## See also
 
-- [Architecture](/architecture.md) — System architecture and data flow
-- [Models Module](/src/models.md) — Full Rust type definitions
+- [Architecture](../architecture.md) — System architecture and data flow
+- [Models Module](../src/models.md) — Full Rust type definitions

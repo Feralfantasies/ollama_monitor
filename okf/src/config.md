@@ -29,4 +29,4 @@ Loads application configuration from environment variables with sensible default
 
 ## See also
 
-- [Architecture](/architecture.md) — Where config fits in the data flow
+- [Architecture](../architecture.md) — Where config fits in the data flow

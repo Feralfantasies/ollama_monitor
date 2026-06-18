@@ -96,5 +96,5 @@ ORDER BY id DESC
 
 ## See also
 
-- [Models Module](/src/models.md) — `CheckResult` structure that maps to this table
-- [API Module](/src/api.md) — Refresh loop that inserts rows
+- [Models Module](../src/models.md) — `CheckResult` structure that maps to this table
+- [API Module](../src/api.md) — Refresh loop that inserts rows

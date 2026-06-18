@@ -55,4 +55,4 @@ Script is made executable (`chmod 0755`) and passed to `query_gpu_bin()` via `mo
 
 ## See also
 
-- [Testing Strategy](/testing/testing.md) — Full testing strategy including unit tests
+- [Testing Strategy](../testing/testing.md) — Full testing strategy including unit tests

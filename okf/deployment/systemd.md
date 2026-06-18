@@ -75,4 +75,4 @@ sudo systemctl status ollama_monitor
 ## See also
 
 - [Docker Deployment](docker.md) — Container deployment alternative
-- [Config Module](/src/config.md) — All available environment variables
+- [Config Module](../src/config.md) — All available environment variables

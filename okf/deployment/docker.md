@@ -47,5 +47,5 @@ docker run -d \
 
 ## See also
 
-- [Config Module](/src/config.md) — All available environment variables
+- [Config Module](../src/config.md) — All available environment variables
 - [Systemd Deployment](systemd.md) — Alternative direct-host deployment

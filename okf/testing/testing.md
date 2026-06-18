@@ -65,5 +65,5 @@ RUSTFLAGS="-D warnings" cargo test --all-targets
 
 ## See also
 
-- [Tests Module](/src/tests.md) — Test harness implementation details
+- [Tests Module](../src/tests.md) — Test harness implementation details
 - [CI/CD Pipeline](ci-cd.md) — GitHub Actions workflow definitions

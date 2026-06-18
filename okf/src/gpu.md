@@ -40,4 +40,4 @@ nvidia-smi --query-gpu=index,name,temperature.gpu,memory.used,memory.total,utili
 
 ## See also
 
-- [Architecture](/architecture.md) — Where GPU module fits in the data flow
+- [Architecture](../architecture.md) — Where GPU module fits in the data flow

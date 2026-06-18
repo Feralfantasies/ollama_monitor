@@ -75,4 +75,4 @@ Then restart Home Assistant.
 
 ## See also
 
-- [REST API Reference](/api/api-reference.md) — The `/api/status` endpoint the integration polls
+- [REST API Reference](../api/api-reference.md) — The `/api/status` endpoint the integration polls

@@ -86,4 +86,4 @@ Flat structure with all fields from `MonitorStatus` flattened for single-row SQL
 
 ## See also
 
-- [Database Schema](/db/schema.md) — How `CheckResult` maps to the SQLite table
+- [Database Schema](../db/schema.md) — How `CheckResult` maps to the SQLite table

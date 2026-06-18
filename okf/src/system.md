@@ -47,4 +47,4 @@ Memory and CPU are collected independently — a `/proc/meminfo` failure does no
 
 ## See also
 
-- [Architecture](/architecture.md) — Where system metrics fit in the data flow
+- [Architecture](../architecture.md) — Where system metrics fit in the data flow
