@@ -14,7 +14,18 @@ ollama_monitor/
 │   ├── gpu.rs                    # nvidia-smi CLI wrapper + CSV parser
 │   ├── models.rs                 # Shared data structures (serde models)
 │   ├── ollama.rs                 # Ollama REST API client
+│   ├── system.rs                 # Linux /proc-based system metric collection
 │   └── tests.rs                  # Integration tests (mock Ollama server + mock nvidia-smi)
+├── okf/                          # Open Knowledge Format bundle (agent context)
+│   ├── index.md                  # Bundle root index
+│   ├── overview.md               # Project overview
+│   ├── architecture.md           # System architecture and data flow
+│   ├── src/                      # Source module concept documents
+│   ├── db/                       # Database schema concept
+│   ├── api/                      # REST API reference
+│   ├── ha-integration/           # Home Assistant integration docs
+│   ├── deployment/               # Deployment guides (Docker, systemd)
+│   └── testing/                  # Testing strategy and CI/CD docs
 ├── ha_integration/               # Home Assistant custom integration
 │   └── custom_components/ollama_monitor/
 │       ├── __init__.py           # Integration setup/unload
@@ -76,6 +87,7 @@ nvidia-smi CLI ─────────────────────�
 ### Testing
 
 All tests run **without a real GPU or running Ollama instance**:
+
 - **Mock Ollama server** — A lightweight axum server on a random port returns deterministic model data on `/api/tags`.
 - **Mock `nvidia-smi` binary** — A shell script prints deterministic CSV output, passed to `query_gpu_bin()` instead of the system binary.
 - Tests are in `src/tests.rs` (integration tests) and `src/db.rs` (unit tests).
@@ -97,6 +109,7 @@ A native HA custom integration — no YAML config, no MQTT, no terminal access n
 ### Installation Target
 
 When copying manually, files from `ha_integration/custom_components/ollama_monitor/` go to:
+
 - `/config/custom_components/ollama_monitor/` (HA supervised/Docker)
 - `~/.homeassistant/custom_components/ollama_monitor/` (HA core)
 - `/usr/share/hassio/homeassistant/custom_components/ollama_monitor/` (HA OS)
@@ -120,6 +133,7 @@ All numeric sensors use `state_class: measurement` for HA statistics/history gra
 ## CI/CD
 
 ### CI (`.github/workflows/ci.yml`)
+
 - Runs on custom `firethorn` runner (self-hosted Arc runner)
 - **Format** → `cargo fmt --check`
 - **Clippy** → `cargo clippy --all-targets -- -D warnings`
@@ -128,10 +142,18 @@ All numeric sensors use `state_class: measurement` for HA statistics/history gra
 - **Musl build** → `cargo build --release --target x86_64-unknown-linux-musl`
 
 ### Releases (`.github/workflows/release.yml`)
+
 - On push to `main`: auto-bump semantic version tag, build musl static binary, create GitHub release with binary artifact
 
 ### Pre-commit Hook (`hooks/pre-commit`)
+
 - Runs `cargo fmt --check`, `cargo clippy`, and `cargo test` before every commit. Must pass for commit to succeed.
+
+## OKF Knowledge Bundle (`okf/`)
+
+An [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle providing agent-readable project context. Each document has YAML frontmatter with `type`, `title`, `description`, optional `resource`, `tags`, and `timestamp`.
+
+Start at `okf/index.md` to browse all concepts. Cross-linked via `/`-prefixed bundle-relative paths.
 
 ## Build & Run
 
