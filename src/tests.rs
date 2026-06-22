@@ -145,7 +145,7 @@ async fn test_full_pipeline_history_accumulates() {
     let gpu_fn = mock_gpu_with_bin(&mock_nvidia_dir);
 
     let pool = open_test_pool().await;
-    let state = api::AppState::new(pool.clone());
+    let state = api::AppState::with_config(pool.clone(), Config::default());
     let config = cfg_for_ollama(&ollama_url);
 
     for _ in 0..3 {
@@ -197,7 +197,7 @@ async fn test_history_timestamps_ordered() {
     let gpu_fn = mock_gpu_with_bin(&mock_nvidia_dir);
 
     let pool = open_test_pool().await;
-    let state = api::AppState::new(pool.clone());
+    let state = api::AppState::with_config(pool.clone(), Config::default());
     let config = cfg_for_ollama(&ollama_url);
 
     for _ in 0..4 {
@@ -227,7 +227,7 @@ async fn test_unreachable_ollama_records_correctly() {
     let gpu_fn = mock_gpu_with_bin(&mock_nvidia_dir);
 
     let pool = open_test_pool().await;
-    let state = api::AppState::new(pool.clone());
+    let state = api::AppState::with_config(pool.clone(), Config::default());
 
     let config = Config {
         ollama_host: "http://127.0.0.1:59999".into(),
@@ -263,7 +263,7 @@ async fn test_no_gpu_records_nulls() {
     let no_gpu_fn = |_idx: usize| GpuMetric::placeholder();
 
     let pool = open_test_pool().await;
-    let state = api::AppState::new(pool.clone());
+    let state = api::AppState::with_config(pool.clone(), Config::default());
     let config = cfg_for_ollama(&ollama_url);
 
     api::run_one_refresh(&config, &state, &no_gpu_fn).await;
@@ -293,7 +293,7 @@ async fn test_mixed_gpu_availability() {
     let no_gpu_fn = |_idx: usize| GpuMetric::placeholder();
 
     let pool = open_test_pool().await;
-    let state = api::AppState::new(pool.clone());
+    let state = api::AppState::with_config(pool.clone(), Config::default());
     let config = cfg_for_ollama(&ollama_url);
 
     api::run_one_refresh(&config, &state, &good_fn).await;
@@ -331,7 +331,7 @@ async fn test_dashboard_api_endpoints() {
     let gpu_fn = mock_gpu_with_bin(&mock_nvidia_dir);
 
     let pool = open_test_pool().await;
-    let state = api::AppState::new(pool.clone());
+    let state = api::AppState::with_config(pool.clone(), Config::default());
     let config = cfg_for_ollama(&ollama_url);
 
     for _ in 0..2 {
