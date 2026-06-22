@@ -28,13 +28,15 @@ fn now_ts() -> String {
 pub struct AppState {
     pub latest_status: Arc<RwLock<Option<MonitorStatus>>>,
     pub db_pool: SqlitePool,
+    pub config: Config,
 }
 
 impl AppState {
-    pub fn new(db_pool: SqlitePool) -> Self {
+    pub fn with_config(db_pool: SqlitePool, config: Config) -> Self {
         Self {
             latest_status: Arc::new(RwLock::new(None)),
             db_pool,
+            config,
         }
     }
 }
@@ -115,8 +117,9 @@ pub async fn run_refresh_loop(config: &Config, state: AppState) {
 
 // ── HTTP Handlers ────────────────────────────────────────
 
-async fn handle_dashboard() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
+async fn handle_dashboard(State(state): State<AppState>) -> Html<String> {
+    let interval_ms = state.config.refresh_interval_secs * 1000;
+    Html(DASHBOARD_HTML.replace("REFRESH_INTERVAL_MS_PLACEHOLDER", &interval_ms.to_string()))
 }
 
 async fn handle_api_status(
@@ -527,6 +530,8 @@ setupRangeBar('sysRangeBar',loadSystemHistory);
 
 // Init
 refresh();loadHistory();loadSystemHistory();
-setInterval(function(){refresh();loadHistory();loadSystemHistory();},30000);
+setInterval(refresh, REFRESH_INTERVAL_MS_PLACEHOLDER);
+setInterval(loadHistory, REFRESH_INTERVAL_MS_PLACEHOLDER * 2);
+setInterval(loadSystemHistory, REFRESH_INTERVAL_MS_PLACEHOLDER * 2);
 window.addEventListener('resize',function(){loadHistory();loadSystemHistory();});
 </script></body></html>"#;

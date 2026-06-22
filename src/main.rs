@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     let db_pool = db::open_pool("ollama_monitor.db").await?;
     db::migrate(&db_pool).await?;
 
-    let state = api::AppState::new(db_pool);
+    let state = api::AppState::with_config(db_pool, config.clone());
 
     let cfg_clone = config.clone();
     let state_clone = state.clone();

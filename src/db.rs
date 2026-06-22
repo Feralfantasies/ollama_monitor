@@ -190,7 +190,7 @@ pub async fn query_history(
     let sql = format!(
         "SELECT strftime('%s', recorded_at) * 1000 as ts, gpu_memory_used_mib, gpu_temperature_c \
          FROM check_results \
-         WHERE recorded_at >= datetime('now', '{}') \
+         WHERE datetime(recorded_at) >= datetime('now', '{}') \
          ORDER BY recorded_at ASC",
         interval
     );
@@ -439,5 +439,53 @@ mod tests {
         assert!(row.gpu_memory_total_mib.is_none());
         assert!(row.gpu_utilization_pct.is_none());
         assert!(row.gpu_power_watts.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_history_range_filters_by_time() {
+        let pool = setup_test_db().await;
+
+        // Insert a row with a timestamp 10 hours ago.
+        use chrono::Duration;
+        let old_timestamp = Utc::now()
+            .checked_sub_signed(Duration::hours(10))
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        sqlx::query(
+            r#"
+            INSERT INTO check_results (
+                recorded_at, ollama_url, ollama_reachable,
+                loaded_model, available_models_count,
+                gpu_name, gpu_temperature_c,
+                gpu_memory_used_mib, gpu_memory_total_mib,
+                gpu_utilization_pct, gpu_power_watts
+            ) VALUES (?, 'http://x', 1, 'x', 1, 'x', 40.0, 1024, 2048, 50.0, 100.0)
+            "#,
+        )
+        .bind(&old_timestamp)
+        .execute(&pool)
+        .await
+        .expect("Failed to insert old row");
+
+        // Insert a row just now.
+        insert_check_result(&pool, &make_sample_check())
+            .await
+            .expect("Failed to insert recent row");
+
+        // 15-minute range should only return the recent row.
+        let recent = query_history(&pool, HistoryRange::Last15Minutes)
+            .await
+            .unwrap();
+        assert_eq!(recent.len(), 1);
+
+        // 6-hour range should only return the recent row.
+        let six_hours = query_history(&pool, HistoryRange::Last6Hours)
+            .await
+            .unwrap();
+        assert_eq!(six_hours.len(), 1);
+
+        // 1-day range should return both.
+        let one_day = query_history(&pool, HistoryRange::LastDay).await.unwrap();
+        assert_eq!(one_day.len(), 2);
     }
 }
