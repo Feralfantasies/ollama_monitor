@@ -35,7 +35,7 @@ const CREATE_CHECK_RESULTS: &str = r#"
 
 /// Prune check_results older than 30 days.
 const VACUUM_CHECK_SQL: &str =
-    "DELETE FROM check_results WHERE recorded_at < datetime('now', '-30 days')";
+    "DELETE FROM check_results WHERE datetime(recorded_at) < datetime('now', '-30 days')";
 
 // ── Public types ─────────────────────────────────────────
 
@@ -222,7 +222,7 @@ pub async fn query_system_history(
     let sql = format!(
         "SELECT strftime('%s', recorded_at) * 1000 as ts, sys_memory_used_mib, sys_cpu_utilization_pct \
          FROM check_results \
-         WHERE recorded_at >= datetime('now', '{}') \
+         WHERE datetime(recorded_at) >= datetime('now', '{}') \
          ORDER BY recorded_at ASC",
         interval
     );
