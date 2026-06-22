@@ -5,6 +5,7 @@ mod db;
 mod gpu;
 mod models;
 mod ollama;
+mod system;
 
 #[cfg(test)]
 mod tests;
