@@ -3,8 +3,10 @@ mod api;
 mod config;
 mod db;
 mod gpu;
+mod llamacpp;
 mod models;
 mod ollama;
+mod switcher;
 mod system;
 
 #[cfg(test)]

@@ -35,12 +35,61 @@ timestamp: 2026-06-18T00:00:00Z
                      └──────────────────┘
 ```
 
+## GPU workload switching
+
+Added alongside the monitoring path. On a single-GPU host only one model can be
+VRAM-resident at a time, so switching is an *arbitration* problem rather than a
+routing one.
+
+```
+  Dashboard / HTTP client
+        │  POST /api/model {"target":"llama02"}
+        ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │ ollama_monitor (llama-mon CT)                              │
+  │                                                            │
+  │  SwitchPlan  ── pure state machine, no I/O, no clocks       │
+  │      │  next(&WorldSnapshot) -> SwitchAction                │
+  │      ▼                                                      │
+  │  Switcher    ── driver: gathers snapshots, runs actions     │
+  │      │              │                    │                  │
+  └──────┼──────────────┼────────────────────┼──────────────────┘
+         │              │                    │
+         │   bearer     │  bearer            │  nvidia-smi (NVML totals)
+         ▼              ▼                    ▼
+  ┌────────────┐ ┌────────────┐      ┌──────────────────┐
+  │ llama01 CT │ │ llama02 CT │      │ host GPU: how     │
+  │ agent :8100│ │ agent :8100│      │ much card is free │
+  │ + llama-   │ │ + llama-   │      └──────────────────┘
+  │   server   │ │   server   │
+  └────────────┘ └────────────┘      ┌────────────┐
+                                     │ comfyui CT │  agent :8100
+                                     └────────────┘
+```
+
+The split is deliberate and comes from a measured constraint:
+`nvidia-smi --query-compute-apps` reports `process_name` as `[Not Found]` for
+container processes (PID namespaces are not shared), so **NVML totals** are used as
+the authoritative VRAM guard while **agents** provide attribution.
+
+The ordering invariant — never start the target until VRAM is *observed* below
+`SWITCH_VRAM_FLOOR_MIB`, and fail rather than proceed otherwise — is enforced by the
+pure `SwitchPlan`, which makes it testable without HTTP, a GPU or sleeps. See
+[Switcher Module](src/switcher.md).
+
+Model discovery picks its client automatically: if any `NODE_<i>_*` llama node is
+configured, the llama.cpp client is used; otherwise the Ollama client. This is why
+an llama.cpp deployment no longer logs `Ollama connection failed` every cycle.
+
 ## Module summary
 
 | Module | File | Responsibility |
 |---|---|---|
 | **Config** | [`src/config.rs`](src/config.md) | Load settings from env vars with defaults |
 | **Ollama Client** | [`src/ollama.rs`](src/ollama.md) | HTTP client for Ollama `/api/tags` endpoint |
+| **llama.cpp Client** | [`src/llamacpp.rs`](src/llamacpp.md) | HTTP client for llama-server `/v1/models` + `/props`; the only trustworthy readiness signal |
+| **Switcher** | [`src/switcher.rs`](src/switcher.md) | VRAM arbitration: stop incumbent, confirm release, start target |
+| **Switch Agent** | [`src/bin/switch_agent.rs`](deployment/switch-agent.md) | Second binary, deployed into each workload container; allowlisted `systemctl` behind a bearer token |
 | **GPU** | [`src/gpu.rs`](src/gpu.md) | `nvidia-smi` CLI wrapper and CSV parser |
 | **System Metrics** | [`src/system.rs`](src/system.md) | `/proc/stat` and `/proc/meminfo` reader |
 | **Models** | [`src/models.rs`](src/models.md) | Shared data structures (serde derive) |

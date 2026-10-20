@@ -1,27 +1,40 @@
 /// Axum REST API server + embedded web dashboard.
 use anyhow::Result;
-use axum::{extract::State, http::StatusCode, response::Html, routing::get, Router};
+use axum::{
+    extract::State,
+    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    response::{Html, IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tracing::info as log_info;
 
-use crate::config::Config;
+use crate::config::{Config, NodeKind};
 use crate::db::{self, HistoryRange};
+use crate::llamacpp::LlamaCppClient;
 use crate::models::{
     ApiGpuResponse, ApiHistoryResponse, ApiModelResponse, ApiSystemHistoryResponse,
     ApiSystemResponse, CheckResult, GpuHistoryPoint, GpuMetric, MonitorStatus, SystemHistoryPoint,
 };
 use crate::ollama::OllamaClient;
+use crate::switcher::{NodeStatus, SwitchProgress, Switcher};
 use sqlx::SqlitePool;
 
+/// Render the current time as an RFC 3339 UTC timestamp.
+///
+/// This previously formatted a `Duration`-since-epoch as `"{days} days {HH}:{MM}"`,
+/// which produced values like `"20745 days 22:38"` — a day count since 1970 rather
+/// than a wall-clock time, and unparseable by any standard tool. Observed live on
+/// the deployed monitor (`/api/gpu` and `/api/status`).
+///
+/// The Home Assistant integration treats this field as an opaque string
+/// (`data.get("timestamp", "")` in `coordinator.py`), so the format change is safe;
+/// no test asserts on the old shape.
 fn now_ts() -> String {
-    use std::time::SystemTime;
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or("unknown".into(), |d| {
-            let s = d.as_secs();
-            format!("{} days {:02}:{:02}", s / 86400, (s % 3600) / 60, s % 60)
-        })
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[derive(Clone)]
@@ -29,28 +42,82 @@ pub struct AppState {
     pub latest_status: Arc<RwLock<Option<MonitorStatus>>>,
     pub db_pool: SqlitePool,
     pub config: Config,
+    /// Executes GPU workload switches against the per-container agents.
+    pub switcher: Switcher,
+    /// Shared progress of the in-flight (or most recent) switch.
+    pub switch_progress: Arc<RwLock<SwitchProgress>>,
 }
 
 impl AppState {
     pub fn with_config(db_pool: SqlitePool, config: Config) -> Self {
+        let switcher = Switcher::new(config.clone());
         Self {
             latest_status: Arc::new(RwLock::new(None)),
             db_pool,
             config,
+            switcher,
+            switch_progress: Arc::new(RwLock::new(SwitchProgress::default())),
         }
     }
 }
 
 // ── Background refresh loop ──────────────────────────────
 
-/// Run a single iteration of the refresh loop, updating state and persisting to DB.
-pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
-    config: &Config,
-    state: &AppState,
-    gpu_fn: &G,
-) {
-    let client = OllamaClient::new(config.ollama_base_url());
+/// Discover served models: llama.cpp nodes first, Ollama as the fallback.
+///
+/// `llama-server` does **not** implement Ollama's API — `/api/tags` and `/api/ps`
+/// both return 404 on b11583 — so pointing the Ollama client at it produces
+/// nothing but a warning every refresh cycle. When `NODE_<i>_*` entries are
+/// configured we probe each llama node's OpenAI-compatible endpoints instead.
+///
+/// The Ollama path is retained unchanged for deployments that still run Ollama.
+///
+/// Returns `(available_models, loaded_model, backend_reachable)`. A model counts
+/// as `loaded` only when its node reports ready, i.e. `/props` answered 200 —
+/// the same distinction that keeps the switcher from OOMing the card.
+async fn discover_models(config: &Config) -> (Vec<String>, Option<String>, bool) {
+    let has_llama_nodes = config
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::Llama && n.server_url.is_some());
 
+    if has_llama_nodes {
+        let mut available: Vec<String> = Vec::new();
+        let mut loaded: Option<String> = None;
+        let mut any_reachable = false;
+
+        for node in &config.nodes {
+            if node.kind != NodeKind::Llama {
+                continue;
+            }
+            let Some(url) = node.server_url.as_ref() else {
+                continue;
+            };
+            let probe = LlamaCppClient::new(url.clone()).probe().await;
+            if probe.reachable {
+                any_reachable = true;
+            }
+            // The resident model is the one that is actually loaded and serving.
+            if probe.ready {
+                if let Some(alias) = probe.alias.clone() {
+                    if !available.contains(&alias) {
+                        available.push(alias.clone());
+                    }
+                    if loaded.is_none() {
+                        loaded = Some(alias);
+                    }
+                }
+            }
+            for id in &probe.available_models {
+                if !available.contains(id) {
+                    available.push(id.clone());
+                }
+            }
+        }
+        return (available, loaded, any_reachable);
+    }
+
+    let client = OllamaClient::new(config.ollama_base_url());
     let tags_resp = client.try_fetch_models().await;
     let available: Vec<String> = match &tags_resp {
         Some(tags) => tags.models.iter().map(|m| m.model_name.clone()).collect(),
@@ -59,6 +126,16 @@ pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
     let loaded_model = tags_resp
         .as_ref()
         .and_then(|t| t.models.first().cloned().map(|m| m.model_name));
+    (available, loaded_model, tags_resp.is_some())
+}
+
+/// Run a single iteration of the refresh loop, updating state and persisting to DB.
+pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
+    config: &Config,
+    state: &AppState,
+    gpu_fn: &G,
+) {
+    let (available, loaded_model, backend_reachable) = discover_models(config).await;
 
     let gpu_metric = gpu_fn(config.gpu_device_index);
 
@@ -71,7 +148,10 @@ pub async fn run_one_refresh<G: Fn(usize) -> GpuMetric>(
 
     let status = MonitorStatus {
         ollama_url: config.ollama_base_url(),
-        ollama_reachable: tags_resp.is_some(),
+        // Field name retained for Home Assistant compatibility; the meaning has
+        // broadened to "a configured model backend answered", which for a
+        // llama.cpp deployment is a llama-server, not Ollama.
+        ollama_reachable: backend_reachable,
         loaded_model: loaded_model.clone(),
         available_models: available.clone(),
         gpu: gpu_metric.clone(),
@@ -240,6 +320,247 @@ async fn handle_api_sys_history(
     Ok(axum::Json(ApiSystemHistoryResponse { points }))
 }
 
+// ── Model switching ────────────────────────────────────
+
+/// Body of `POST /api/model`. Either selector may be used:
+///
+/// ```json
+/// { "target": "llama02" }          // by node name
+/// { "model":  "Precog-24B" }       // by served model alias
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelSelectRequest {
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiNodesResponse {
+    nodes: Vec<NodeStatus>,
+    /// Names of nodes that can be switched to/from. The dashboard renders a
+    /// control only for these; display-only nodes (missing agent URL, token or
+    /// unit) are listed in `nodes` but cannot be selected.
+    switchable_nodes: Vec<String>,
+    vram_used_mib: Option<u64>,
+    vram_total_mib: Option<u64>,
+    vram_free_mib: Option<u64>,
+    /// Alias of the model currently loaded and serving, if any.
+    resident_model: Option<String>,
+    /// Node holding the GPU right now, if identifiable.
+    resident_node: Option<String>,
+    switch: SwitchProgress,
+}
+
+fn json_err(status: StatusCode, msg: impl Into<String>) -> Response {
+    (status, Json(serde_json::json!({ "error": msg.into() }))).into_response()
+}
+
+/// Resolve a switch target from either selector form.
+///
+/// The error type is deliberately a small `(StatusCode, String)` pair rather than
+/// a built `Response`: `clippy::result_large_err` rejects a `Result` whose `Err`
+/// variant carries a whole axum response (>=128 bytes) through every stack frame,
+/// and the JSON envelope is only needed at the handler boundary.
+fn resolve_target(
+    state: &AppState,
+    req: &ModelSelectRequest,
+) -> Result<String, (StatusCode, String)> {
+    let by_name = req
+        .target
+        .as_ref()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let by_model = req
+        .model
+        .as_ref()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
+
+    let wanted = match (&by_name, &by_model) {
+        (Some(n), _) => n.clone(),
+        (None, Some(m)) => match state.config.node_by_alias(m) {
+            Some(n) => n.name.clone(),
+            None => {
+                let known: Vec<String> = state
+                    .config
+                    .nodes
+                    .iter()
+                    .filter_map(|n| n.model_alias.clone())
+                    .collect();
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    format!("no node serves model '{m}'; known aliases: {known:?}"),
+                ));
+            }
+        },
+        (None, None) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "provide 'target' (node name) or 'model' (alias)".to_string(),
+            ))
+        }
+    };
+
+    match state.config.node_by_name(&wanted) {
+        None => {
+            let known: Vec<&str> = state.config.nodes.iter().map(|n| n.name.as_str()).collect();
+            Err((
+                StatusCode::NOT_FOUND,
+                format!("unknown node '{wanted}'; configured nodes: {known:?}"),
+            ))
+        }
+        Some(n) if !n.switchable() => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "node '{wanted}' is not switchable (missing agent URL, token or unit); \
+                 it is display-only"
+            ),
+        )),
+        Some(_) => Ok(wanted),
+    }
+}
+
+/// `GET /api/nodes` — live per-node state plus VRAM headroom and switch progress.
+async fn handle_api_nodes(State(state): State<AppState>) -> Response {
+    let (nodes, vram_used) = state.switcher.node_statuses().await;
+
+    // Total VRAM comes from the GPU metric already collected by the refresh loop,
+    // so this endpoint does not shell out to nvidia-smi a second time.
+    let vram_total = state
+        .latest_status
+        .read()
+        .await
+        .as_ref()
+        .and_then(|s| s.gpu.memory_total_mib);
+    let vram_free = match (vram_total, vram_used) {
+        (Some(t), Some(u)) => Some(t.saturating_sub(u)),
+        _ => None,
+    };
+
+    // Attribution comes from agent-reported state, NOT from nvidia-smi process
+    // names: those render as [Not Found] across container PID namespaces.
+    // Owned copies are extracted first because `nodes` is moved into the response.
+    let (resident_model, resident_node) = match nodes.iter().find(|n| n.ready) {
+        Some(n) => (n.model_alias.clone(), Some(n.name.clone())),
+        None => (None, None),
+    };
+    let progress = state.switch_progress.read().await.clone();
+
+    Json(ApiNodesResponse {
+        switchable_nodes: state
+            .config
+            .switchable_nodes()
+            .iter()
+            .map(|n| n.name.clone())
+            .collect(),
+        nodes,
+        vram_used_mib: vram_used,
+        vram_total_mib: vram_total,
+        vram_free_mib: vram_free,
+        resident_model,
+        resident_node,
+        switch: progress,
+    })
+    .into_response()
+}
+
+/// `GET /api/switch` — progress of the in-flight or most recent switch.
+async fn handle_api_switch(State(state): State<AppState>) -> Response {
+    Json(state.switch_progress.read().await.clone()).into_response()
+}
+
+/// `POST /api/model` — request that a given model become the resident one.
+///
+/// Runs in the background and returns `202 Accepted` immediately: a switch
+/// measured 36–148 s here, far too long to hold an HTTP request open behind a
+/// reverse proxy. Poll `GET /api/switch` for progress.
+///
+/// Concurrency is refused rather than queued: two overlapping switches could
+/// interleave their stop/start actions and load two models onto one card.
+///
+/// When `MONITOR_API_TOKEN` is set, the caller must present it as a bearer token.
+/// This endpoint can stop and start production GPU workloads, so it is guarded
+/// even though the service sits behind a LAN-only ingress.
+async fn handle_api_model(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ModelSelectRequest>,
+) -> Response {
+    if state.config.monitor_api_token.is_set() {
+        let provided = headers
+            .get(AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .unwrap_or("");
+        if !state.config.monitor_api_token.matches(provided) {
+            return json_err(
+                StatusCode::UNAUTHORIZED,
+                "valid bearer token required (MONITOR_API_TOKEN is set)",
+            );
+        }
+    }
+    let target = match resolve_target(&state, &req) {
+        Ok(t) => t,
+        Err((status, msg)) => return json_err(status, msg),
+    };
+
+    // Check-and-set under the write guard so two simultaneous POSTs cannot both
+    // pass the "is a switch running" test. The guard is dropped before spawning:
+    // the task itself takes this lock on its first progress update.
+    {
+        let mut p = state.switch_progress.write().await;
+        if p.running {
+            return json_err(
+                StatusCode::CONFLICT,
+                format!(
+                    "a switch to '{}' is already in progress (phase: {}); \
+                     refusing to interleave two switches",
+                    p.target.clone().unwrap_or_default(),
+                    p.phase
+                ),
+            );
+        }
+        *p = SwitchProgress {
+            running: true,
+            target: Some(target.clone()),
+            phase: "queued".to_string(),
+            vram_floor_mib: state.config.switch_vram_floor_mib,
+            ..Default::default()
+        };
+    }
+
+    let switcher = state.switcher.clone();
+    let progress = state.switch_progress.clone();
+    let spawn_target = target.clone();
+    tokio::spawn(async move {
+        if let Err(e) = switcher
+            .switch_to_with_progress(&spawn_target, Some(progress.clone()))
+            .await
+        {
+            // switch_to returns Err for setup problems (unknown node, start
+            // failure); a VRAM/ready timeout is reported as a failed outcome
+            // instead. Either way the job must not stay marked running.
+            let mut g = progress.write().await;
+            g.running = false;
+            g.phase = "failed".to_string();
+            g.error = Some(e.to_string());
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "accepted": true,
+            "target": target,
+            "detail": "switch started in background; poll GET /api/switch",
+            "vram_floor_mib": state.config.switch_vram_floor_mib,
+        })),
+    )
+        .into_response()
+}
+
 // ── Router builder ───────────────────────────────────────
 
 pub async fn build_router(state: AppState) -> Router {
@@ -251,6 +572,9 @@ pub async fn build_router(state: AppState) -> Router {
         .route("/api/history", get(handle_api_history))
         .route("/api/system", get(handle_api_system))
         .route("/api/sys-history", get(handle_api_sys_history))
+        .route("/api/nodes", get(handle_api_nodes))
+        .route("/api/switch", get(handle_api_switch))
+        .route("/api/model", post(handle_api_model))
         .with_state(state)
 }
 
@@ -296,6 +620,11 @@ h1{text-align:center;margin-bottom:1.5rem;color:var(--accent)}
 .chart-hint{position:absolute;top:8px;right:12px;font-size:.75rem;color:var(--muted)}
 .chart-tooltip{position:absolute;display:none;background:#1f2335;border:1px solid #414868;border-radius:6px;padding:8px 12px;font-size:.8rem;pointer-events:none;color:var(--text);z-index:10}
 .chart-tooltip .tt-label{color:var(--muted);font-size:.7rem}
+.sw-btn{background:#2f3650;border:1px solid #414868;color:var(--text);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:.78rem;margin-left:10px;transition:all .2s}
+.sw-btn:hover{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+.sw-btn:disabled{opacity:.45;cursor:not-allowed}
+.sw-resident{color:var(--ok);font-weight:600;font-size:.8rem;margin-left:10px}
+.sw-note{margin-top:10px;font-size:.82rem;color:var(--muted);line-height:1.45}
 </style></head><body>
 <h1>Ollama Monitor</h1>
 <div class="grid">
@@ -322,6 +651,19 @@ h1{text-align:center;margin-bottom:1.5rem;color:var(--accent)}
     <div class="bar-bg"><div class="bar-fill" id="smb" style="width:0%"></div></div></div>
   <div class="card"><h2>CPU</h2>
     <div class="metric"><span class="label">Utilisation</span><span class="value" id="cpu">—</span></div></div>
+
+  <div class="card full-width">
+    <h2>Model Switcher</h2>
+    <div class="metric"><span class="label">Resident model</span><span class="value" id="resModel">&mdash;</span></div>
+    <div class="metric"><span class="label">Resident node</span><span class="value" id="resNode">&mdash;</span></div>
+    <div class="metric"><span class="label">VRAM used</span><span class="value" id="swVram">&mdash;</span></div>
+    <div class="metric"><span class="label">VRAM free</span><span class="value" id="swFree">&mdash;</span></div>
+    <div class="metric"><span class="label">Switch floor</span><span class="value" id="swFloor">&mdash;</span></div>
+    <div class="metric"><span class="label">Switch phase</span><span class="value" id="swPhase">&mdash;</span></div>
+    <div id="nodeList" style="margin-top:10px"></div>
+    <p class="sw-note" id="swMsg"></p>
+    <p class="sw-note">Only one workload can be VRAM-resident at a time. Switching stops the current holder, waits for VRAM to fall below the floor, then loads the target (36&ndash;161&nbsp;s measured).</p>
+  </div>
 
   <div class="card full-width">
     <h2>GPU History</h2>
@@ -515,6 +857,81 @@ async function loadSystemHistory(){
 var historyData=null;
 var sysHistoryData=null;
 
+/* ── Model switcher ── */
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c];});}
+
+async function loadNodes(){
+  try{
+    var r=await fetch('/api/nodes');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    var d=await r.json();
+    $e('resModel').textContent=d.resident_model||'None';
+    $e('resNode').textContent=d.resident_node||'\u2014';
+    $e('swVram').textContent=v(d.vram_used_mib)+' MiB';
+    $e('swFree').textContent=v(d.vram_free_mib)+' MiB';
+    var sw=d.switch||{};
+    $e('swFloor').textContent=sw.vram_floor_mib?sw.vram_floor_mib+' MiB':'\u2014';
+    var pe=$e('swPhase');
+    pe.textContent=sw.phase||'\u2014';
+    pe.className='value '+(sw.running?'warn':(sw.error?'err':'ok'));
+
+    var switchable=d.switchable_nodes||[];
+    var html='';
+    (d.nodes||[]).forEach(function(n){
+      var dot=n.ready?'var(--ok)':(n.unit_active?'var(--warn)':'var(--muted)');
+      var state=n.ready?'ready':(n.unit_active?'loading':'stopped');
+      var detail=[];
+      if(n.model_alias)detail.push(esc(n.model_alias));
+      if(n.n_ctx)detail.push('ctx '+n.n_ctx);
+      if(n.total_slots)detail.push(n.total_slots+' slot'+(n.total_slots>1?'s':''));
+      if(!n.agent_reachable)detail.push('<span class="err">agent unreachable</span>');
+      else if(n.error)detail.push('<span class="warn">'+esc(n.error)+'</span>');
+      var canSwitch=switchable.indexOf(n.name)>=0&&!n.ready&&!sw.running;
+      html+='<div class="metric"><span class="label"><span class="dot" style="background:'+dot+'"></span>'+esc(n.name)
+        +' <span style="color:var(--muted)">('+esc(n.kind)+')</span></span>'
+        +'<span class="value">'+state
+        +(detail.length?' &middot; '+detail.join(' &middot; '):'')
+        +(n.ready?'<span class="sw-resident">resident</span>':'')
+        +(canSwitch?'<button class="sw-btn" data-node="'+esc(n.name)+'">Switch to</button>':'')
+        +'</span></div>';
+    });
+    $e('nodeList').innerHTML=html||'<div class="metric"><span class="label">No nodes configured</span></div>';
+    Array.prototype.forEach.call(document.querySelectorAll('.sw-btn'),function(b){
+      b.onclick=function(){switchTo(b.getAttribute('data-node'));};
+    });
+
+    var m=$e('swMsg');
+    if(sw.error){m.innerHTML='<span class="err">Switch failed: '+esc(sw.error)+'</span>';}
+    else if(sw.running){m.textContent='Switching to '+sw.target+'\u2026 phase '+sw.phase+', '+sw.elapsed_secs+'s, VRAM '+v(sw.vram_used_mib)+' MiB';}
+    else if(sw.outcome){m.innerHTML='<span class="ok">Last switch to '+esc(sw.outcome.target)+' ('+esc(sw.outcome.target_model||'?')+') ok in '+sw.outcome.total_secs+'s</span> release '+sw.outcome.release_secs+'s, ready '+sw.outcome.ready_secs+'s, stopped ['+(sw.outcome.stopped_nodes||[]).map(esc).join(', ')+']';}
+    else{m.textContent='';}
+    if(sw.running){setTimeout(loadNodes,3000);}
+  }catch(e){$e('swMsg').textContent='nodes error: '+e.message;}
+}
+
+async function switchTo(name){
+  if(!confirm('Switch the GPU to '+name+'?\n\nThis stops the resident workload and loads '+name+'. It takes roughly 1-3 minutes and interrupts any in-flight generation.'))return;
+  var msg=$e('swMsg');
+  msg.textContent='Requesting switch to '+name+'\u2026';
+  var hdr={'Content-Type':'application/json'};
+  var tok=localStorage.getItem('monitor_api_token');
+  if(tok)hdr['Authorization']='Bearer '+tok;
+  try{
+    var r=await fetch('/api/model',{method:'POST',headers:hdr,body:JSON.stringify({target:name})});
+    var d={};
+    try{d=await r.json();}catch(_){}
+    if(r.status===401){
+      var t=prompt('This monitor requires an API token to switch models. Enter it:');
+      if(t){localStorage.setItem('monitor_api_token',t);return switchTo(name);}
+      msg.innerHTML='<span class="err">Token required.</span>';
+      return;
+    }
+    if(!r.ok){msg.innerHTML='<span class="err">HTTP '+r.status+': '+esc(d.error||'request failed')+'</span>';return;}
+    msg.textContent='Switch to '+name+' accepted; polling progress\u2026';
+    loadNodes();
+  }catch(e){msg.textContent='switch error: '+e.message;}
+}
+
 // Range bar buttons
 function setupRangeBar(barId,loadFn){
   document.querySelectorAll('#'+barId+' button').forEach(function(btn){
@@ -529,8 +946,9 @@ setupRangeBar('rangeBar',loadHistory);
 setupRangeBar('sysRangeBar',loadSystemHistory);
 
 // Init
-refresh();loadHistory();loadSystemHistory();
+refresh();loadNodes();loadHistory();loadSystemHistory();
 setInterval(refresh, REFRESH_INTERVAL_MS_PLACEHOLDER);
+setInterval(loadNodes, REFRESH_INTERVAL_MS_PLACEHOLDER);
 setInterval(loadHistory, REFRESH_INTERVAL_MS_PLACEHOLDER * 2);
 setInterval(loadSystemHistory, REFRESH_INTERVAL_MS_PLACEHOLDER * 2);
 window.addEventListener('resize',function(){loadHistory();loadSystemHistory();});

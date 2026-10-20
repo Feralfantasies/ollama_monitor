@@ -11,6 +11,8 @@
 * [API Module](src/api.md) — Axum REST API server and embedded web dashboard
 * [GPU Module](src/gpu.md) — nvidia-smi CLI wrapper and CSV parser
 * [Ollama Client Module](src/ollama.md) — Ollama REST API client
+* [llama.cpp Client Module](src/llamacpp.md) — llama-server `/v1/models` + `/props` client and the readiness rule
+* [Switcher Module](src/switcher.md) — VRAM arbitration between mutually exclusive GPU workloads
 * [System Metrics Module](src/system.md) — Linux /proc-based system metric collection
 * [Models Module](src/models.md) — Shared data structures (Rust + serde)
 * [Tests Module](src/tests.md) — Integration test harness with mock Ollama and mock nvidia-smi
@@ -31,6 +33,7 @@
 
 * [Docker Deployment](deployment/docker.md) — Docker build, run, and network configuration
 * [Systemd Deployment](deployment/systemd.md) — Systemd service unit configuration
+* [Switch Agent Deployment](deployment/switch-agent.md) — Per-container token-authenticated agent (`src/bin/switch_agent.rs`), and the static-musl build gotcha
 
 ## Development
 
