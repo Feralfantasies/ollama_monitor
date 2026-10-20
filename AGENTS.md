@@ -12,10 +12,15 @@ ollama_monitor/
 │   ├── config.rs                 # Environment variable configuration with defaults
 │   ├── db.rs                     # SQLite persistence (history, migrations)
 │   ├── gpu.rs                    # nvidia-smi CLI wrapper + CSV parser
+│   ├── llamacpp.rs               # llama.cpp llama-server client (/v1/models + /props)
 │   ├── models.rs                 # Shared data structures (serde models)
-│   ├── ollama.rs                 # Ollama REST API client
+│   ├── ollama.rs                 # Ollama REST API client (fallback backend)
+│   ├── switcher.rs               # VRAM arbitration between mutually exclusive GPU workloads
 │   ├── system.rs                 # Linux /proc-based system metric collection
+│   ├── bin/
+│   │   └── switch_agent.rs       # SECOND BINARY: allowlisted systemctl controller
 │   └── tests.rs                  # Integration tests (mock Ollama server + mock nvidia-smi)
+├── tests/fixtures/               # Real captures from live llama-server instances
 ├── okf/                          # Open Knowledge Format bundle (agent context)
 │   ├── index.md                  # Bundle root index
 │   ├── overview.md               # Project overview
@@ -50,12 +55,18 @@ ollama_monitor/
 3. **GPU module** (`gpu.rs`) — Runs `nvidia-smi --query-gpu=... --format=csv,noheader,nounits` and parses the CSV output. On failure returns a placeholder (all nulls).
 4. **Database** (`db.rs`) — SQLite (via sqlx) stores one row per refresh cycle in `check_results` table. Auto-prunes rows older than 30 days. Auto-vacuum enabled.
 5. **API server** (`api.rs`) — Axum HTTP server with:
-   - `GET /` — Embedded dark-themed web dashboard (vanilla JS, canvas charts)
-   - `GET /api/status` — Full combined status (Ollama + GPU metrics)
+   - `GET /` — Embedded dark-themed web dashboard (vanilla JS, canvas charts, Model Switcher panel)
+   - `GET /api/status` — Full combined status (model backend + GPU metrics)
    - `GET /api/gpu` — GPU metrics only
    - `GET /api/models` — Model information only
    - `GET /api/history?range=15m|1h|6h|1d|7d|30d` — Time-series history data points
-6. **Main loop** (`main.rs`) — After startup, spawns a background task that runs `run_one_refresh` at the configured interval. Each cycle fetches Ollama models, queries GPU, persists to SQLite, and updates shared `AppState`.
+   - `GET /api/nodes` — Per-node workload state, VRAM headroom, switch progress
+   - `GET /api/switch` — Progress of the in-flight or most recent switch
+   - `POST /api/model` — Make a node's model VRAM-resident (background job, returns 202)
+6. **llama.cpp client** (`llamacpp.rs`) — Polls `llama-server` `/props` and `/v1/models`. Needed because llama-server returns **404** for Ollama's `/api/tags` and `/api/ps`. `/props` answers **503 while a model is loading**, so HTTP 200 is the only valid readiness signal.
+7. **Switcher** (`switcher.rs`) — Pure state machine (`SwitchPlan`) plus an async driver (`Switcher`). Enforces: never start a model until host VRAM is *observed* below `SWITCH_VRAM_FLOOR_MIB`; fail rather than proceed otherwise. Attribution comes from switch agents because `nvidia-smi` reports container processes as `[Not Found]`.
+8. **Switch agent** (`bin/switch_agent.rs`) — Separate static binary deployed inside each GPU workload container. Exposes `GET /health|/state` and `POST /start|/stop` behind a bearer token, restricted to an allowlist of systemd units. See `okf/deployment/switch-agent.md`.
+9. **Main loop** (`main.rs`) — After startup, spawns a background task that runs `run_one_refresh` at the configured interval. Each cycle discovers models (llama.cpp nodes if configured, else Ollama), queries GPU, persists to SQLite, and updates shared `AppState`.
 
 ### Key Data Flow
 
@@ -75,6 +86,24 @@ nvidia-smi CLI ─────────────────────�
 | `SERVER_PORT` | `3000` | Port for the API server |
 | `REFRESH_INTERVAL_SECS` | `15` | Seconds between status refreshes |
 | `GPU_DEVICE_INDEX` | `0` | NVIDIA GPU device index to query |
+| `GPU_QUERY_BIN` | `nvidia-smi` | GPU query binary; overridable for tests |
+| `MONITOR_API_TOKEN` | *(unset)* | If set, `POST /api/model` requires `Authorization: Bearer <token>` |
+| `NODE_<i>_NAME` | *(required)* | Node id; scanning stops at the first index with no name |
+| `NODE_<i>_KIND` | `llama` | `llama` or `comfyui` — decides how readiness is probed |
+| `NODE_<i>_SERVER_URL` | *(none)* | llama-server root for `/props` + `/v1/models` |
+| `NODE_<i>_AGENT_URL` | *(none)* | Switch-agent root |
+| `NODE_<i>_AGENT_TOKEN` | *(none)* | **Secret** — agent bearer token; redacted from logs |
+| `NODE_<i>_UNIT` | *(none)* | systemd unit the agent may control |
+| `NODE_<i>_MODEL_ALIAS` | *(none)* | Model alias this node serves |
+| `NODE_SCAN_MAX` | `16` | Upper bound on node indices scanned |
+| `SWITCH_VRAM_FLOOR_MIB` | `2000` | VRAM must fall below this before a target starts |
+| `SWITCH_RELEASE_TIMEOUT_SECS` | `180` | Wait budget for VRAM release |
+| `SWITCH_READY_TIMEOUT_SECS` | `600` | Wait budget for the target to become ready |
+| `SWITCH_POLL_INTERVAL_SECS` | `5` | Poll interval during a switch |
+
+Secrets (`MONITOR_API_TOKEN`, `NODE_<i>_AGENT_TOKEN`) are held in a `Secret` type
+whose `Debug` renders `[REDACTED]`, because `main.rs` logs the whole config via
+`tracing::info!(?config, …)`. No token is ever emitted into the served dashboard.
 
 ### Dependencies (notable)
 

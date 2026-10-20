@@ -129,6 +129,10 @@ fn cfg_for_ollama(ollama_url: &str) -> Config {
         server_port: 0,
         refresh_interval_secs: 1,
         gpu_device_index: 0,
+        // Remaining fields (switcher nodes, timing, gpu_query_bin) are irrelevant
+        // to these Ollama-era tests; spread the default so adding a Config field
+        // never breaks them again.
+        ..Config::default()
     }
 }
 
@@ -236,6 +240,7 @@ async fn test_unreachable_ollama_records_correctly() {
         server_port: 0,
         refresh_interval_secs: 1,
         gpu_device_index: 0,
+        ..Config::default()
     };
 
     api::run_one_refresh(&config, &state, &gpu_fn).await;
