@@ -75,6 +75,13 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/ollama_monitor
           retention-days: 1
 
+      - name: Upload switch agent artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: switch_agent-x86_64-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/switch_agent
+          retention-days: 1
+
   create-release:
     name: Create GitHub Release
     runs-on: firethorn
@@ -86,6 +93,11 @@ jobs:
         with:
           name: ollama_monitor-x86_64-linux-musl
 
+      - name: Download switch agent artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: switch_agent-x86_64-linux-musl
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -96,7 +108,8 @@ jobs:
             ${{ needs.create-tag.outputs.changelog }}
 
             ## 📦 Binary Release
-            - `ollama_monitor` — statically-linked x86_64 Linux (musl) binary
+            - `ollama_monitor` — statically-linked x86_64 Linux (musl) binary: monitor, dashboard and switch orchestrator
+            - `switch_agent` — statically-linked x86_64 Linux (musl) binary: install one **inside each GPU workload container** so the monitor can start/stop an allowlisted systemd unit behind a bearer token
 
             ## 🛠️ Usage
             ```bash
@@ -116,4 +129,6 @@ jobs:
             See [config.example.toml](https://github.com/${{ github.repository }}/blob/${{ needs.create-tag.outputs.new_tag }}/config.example.toml) for configuration options.
           draft: false
           prerelease: false
-          files: ollama_monitor
+          files: |
+            ollama_monitor
+            switch_agent
