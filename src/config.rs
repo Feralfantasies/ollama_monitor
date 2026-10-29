@@ -84,9 +84,10 @@ impl Secret {
         };
         let p = provided.as_bytes();
         let e = expected.as_bytes();
-        let mut diff = (p.len() ^ e.len()) as u8;
+        let mut diff = p.len() ^ e.len();
         for (i, b) in e.iter().enumerate() {
-            diff |= p.get(i).copied().unwrap_or(0) ^ b;
+            let a = p.get(i).copied().unwrap_or(0);
+            diff |= (a ^ b) as usize;
         }
         diff == 0
     }
@@ -711,6 +712,18 @@ mod tests {
         // An unset secret must never authenticate anything, including "".
         assert!(!Secret(None).matches(""));
         assert!(!Secret(None).matches("anything"));
+    }
+
+    #[test]
+    fn secret_rejects_prefix_with_256_byte_suffix() {
+        // Regression for the `as u8` length truncation: an input with the
+        // secret as its exact prefix, longer by a multiple of 256, used to
+        // compare equal because the length XOR wrapped to 0 while every
+        // compared byte matched.
+        let s = Secret(Some("s3cr3t-token".into()));
+        assert!(!s.matches(&format!("s3cr3t-token{}", "a".repeat(256))));
+        assert!(!s.matches(&format!("s3cr3t-token{}", "a".repeat(512))));
+        assert!(s.matches("s3cr3t-token"));
     }
 
     #[test]

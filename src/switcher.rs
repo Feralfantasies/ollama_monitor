@@ -142,8 +142,10 @@ impl AgentClient {
             base_url: base_url.into(),
             token: token.into(),
             http: Client::builder()
-                // State polls must be quick; start/stop get a longer budget because
-                // `systemctl stop` on a 16 GB model takes seconds.
+                // This budget is for actions (start/stop), where
+                // `systemctl stop` on a 16 GB model takes seconds. State
+                // polls are read-only and use a shorter per-request timeout
+                // in `state()` so a hung agent cannot stall the poll loop.
                 .timeout(Duration::from_secs(60))
                 .build()
                 .expect("reqwest client build"),
@@ -159,6 +161,10 @@ impl AgentClient {
         let url = format!("{}/state", self.base_url);
         let resp = self
             .auth(self.http.get(&url))
+            // Read-only poll: cap each state request at 5s instead of the
+            // client-wide 60s action budget, since `observe()` polls every
+            // node on a ~2s cadence.
+            .timeout(Duration::from_secs(5))
             .send()
             .await
             .with_context(|| format!("agent unreachable at {url}"))?;
@@ -364,6 +370,18 @@ impl SwitchPlan {
                     let victim =
                         (0..w.nodes.len()).find(|&i| i != self.target && w.nodes[i].active);
                     match victim {
+                        // Bounded: if a non-target is still active (or keeps
+                        // coming back) past the release timeout, starting the
+                        // target now would OOM. Fail closed instead of issuing
+                        // yet another stop.
+                        Some(i) if w.elapsed_release_secs >= self.release_timeout_secs => {
+                            self.phase = Phase::Finished;
+                            return SwitchAction::Fail(format!(
+                                "node {i} still active after {to}s of release \
+                                 attempts; refusing to start target (would OOM)",
+                                to = self.release_timeout_secs
+                            ));
+                        }
                         Some(i) => return SwitchAction::StopNode(i),
                         None => self.phase = Phase::WaitingForVram,
                     }
@@ -599,6 +617,18 @@ impl Switcher {
             .map(|(node, state)| {
                 let model = state.as_ref().and_then(|s| s.model.clone());
                 let unit = node.unit.clone().unwrap_or_default();
+                let unit_active = state
+                    .as_ref()
+                    .and_then(|s| s.unit_state(&unit))
+                    .map(|a| a == "active")
+                    .unwrap_or(false);
+                // Same readiness rule `observe()` applies, per node kind: a
+                // llama node is ready when its model probe says so, a ComfyUI
+                // node when its unit is active; no applicable state => not ready.
+                let ready = match node.kind {
+                    NodeKind::Llama => model.as_ref().map(|m| m.ready).unwrap_or(false),
+                    NodeKind::ComfyUi => unit_active,
+                };
                 NodeStatus {
                     name: node.name.clone(),
                     kind: match node.kind {
@@ -611,12 +641,8 @@ impl Switcher {
                         .or_else(|| node.model_alias.clone()),
                     n_ctx: model.as_ref().and_then(|m| m.n_ctx),
                     total_slots: model.as_ref().and_then(|m| m.total_slots),
-                    ready: model.as_ref().map(|m| m.ready).unwrap_or(false),
-                    unit_active: state
-                        .as_ref()
-                        .and_then(|s| s.unit_state(&unit))
-                        .map(|a| a == "active")
-                        .unwrap_or(false),
+                    ready,
+                    unit_active,
                     switchable: node.switchable(),
                     observable: node.observable(),
                     agent_reachable: state.is_some(),
@@ -752,6 +778,10 @@ impl Switcher {
                             "cannot stop node: no agent client or unit configured"
                         );
                     }
+                    // Pace retries: at most one stop attempt per node per poll
+                    // interval, even when the attempt errors or the node is
+                    // unconfigurable (prevents a tight retry loop).
+                    tokio::time::sleep(poll).await;
                 }
                 SwitchAction::StartNode(i) => {
                     // Reaching StartNode at all proves the plan observed VRAM below
@@ -924,6 +954,46 @@ mod tests {
         }
         // And it stays failed — no late start.
         assert!(matches!(plan.next(&stuck), SwitchAction::Done));
+    }
+
+    #[test]
+    fn perpetually_active_other_fails_at_release_timeout() {
+        // A non-target node that stays active despite stop attempts (or keeps
+        // coming back) must not be retried forever: at the release timeout the
+        // switch fails closed instead of ever starting the target.
+        let mut plan = SwitchPlan::new(0, FLOOR, REL_TO, RDY_TO);
+        let stubborn = world(
+            Some(24753),
+            three(
+                NodeSnapshot::idle(),
+                NodeSnapshot::active_ready(),
+                NodeSnapshot::idle(),
+            ),
+        );
+        for t in 0..REL_TO {
+            let w = WorldSnapshot {
+                elapsed_release_secs: t,
+                ..stubborn.clone()
+            };
+            assert_eq!(
+                plan.next(&w),
+                SwitchAction::StopNode(1),
+                "t={t}s: still stopping the non-target, not failed yet"
+            );
+        }
+        let w = WorldSnapshot {
+            elapsed_release_secs: REL_TO,
+            ..stubborn.clone()
+        };
+        match plan.next(&w) {
+            SwitchAction::Fail(msg) => {
+                assert!(msg.contains("still active"), "{msg}");
+                assert!(msg.contains("would OOM"), "{msg}");
+            }
+            other => panic!("expected Fail at release timeout, got {other:?}"),
+        }
+        // Once failed, the plan is terminal: no more stops, no start.
+        assert!(matches!(plan.next(&stubborn), SwitchAction::Done));
     }
 
     #[test]

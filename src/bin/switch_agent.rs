@@ -126,10 +126,13 @@ fn err(status: StatusCode, msg: impl Into<String>) -> ApiError {
 fn token_matches(provided: &str, expected: &str) -> bool {
     let p = provided.as_bytes();
     let e = expected.as_bytes();
-    let mut diff = (p.len() ^ e.len()) as u8;
+    // Full-width usize XOR: truncating the length difference to u8 would let
+    // any input longer than the token by a multiple of 256 compare equal
+    // (prefix matches byte-for-byte, length diff wraps to 0).
+    let mut diff = p.len() ^ e.len();
     for (i, b) in e.iter().enumerate() {
         let a = p.get(i).copied().unwrap_or(0);
-        diff |= a ^ b;
+        diff |= (a ^ b) as usize;
     }
     diff == 0
 }
@@ -289,9 +292,16 @@ async fn probe_model(state: &AppState, url: &str) -> ModelState {
                 .and_then(|x| x.as_str())
         })
         .map(|s| s.to_string());
+    // A 200 /props does not alone mean the model can serve: llama-server
+    // keeps answering 200 while the model is asleep. Treat the model as
+    // not-ready when `is_sleeping` is true; absent on older builds (awake).
+    let is_sleeping = v
+        .get("is_sleeping")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
 
     ModelState {
-        ready: true,
+        ready: !is_sleeping,
         model_alias: alias,
         n_ctx,
         total_slots: v.get("total_slots").and_then(|x| x.as_u64()),
@@ -470,6 +480,25 @@ mod tests {
         assert!(!token_matches("abc1234", "abc123"));
         assert!(!token_matches("", "abc123"));
         assert!(!token_matches("abc123", ""));
+    }
+
+    #[test]
+    fn token_compare_rejects_prefix_with_256_byte_suffix() {
+        // Regression for the `as u8` length truncation: the token as an exact
+        // prefix plus a 256-byte multiple used to compare equal.
+        assert!(token_matches("abc123", "abc123"));
+        assert!(!token_matches(
+            &format!("abc123{}", "a".repeat(256)),
+            "abc123"
+        ));
+        assert!(!token_matches(
+            &format!("abc123{}", "a".repeat(512)),
+            "abc123"
+        ));
+        assert!(!token_matches(
+            "abc123",
+            &format!("abc123{}", "a".repeat(256))
+        ));
     }
 
     #[test]

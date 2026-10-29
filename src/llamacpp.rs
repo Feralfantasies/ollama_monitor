@@ -296,8 +296,13 @@ impl LlamaCppClient {
             }
         };
 
+        // A 200 /props alone is not readiness: llama-server keeps answering
+        // 200 while the model is asleep. `is_sleeping` is absent on older
+        // builds, which are treated as awake.
+        let ready = props.is_sleeping != Some(true);
+
         LlamaProbe {
-            ready: true,
+            ready,
             reachable,
             http_status: Some(status.as_u16()),
             alias: props.alias(),
